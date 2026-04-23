@@ -1,0 +1,6 @@
+{
+    "name": "spendula/spike",
+    "require": {
+        "firebase/php-jwt": "^6.0"
+    }
+}
