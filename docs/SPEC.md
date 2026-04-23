@@ -18,7 +18,11 @@ Spendula is not a YNAB alternative. It is a deliberate, narrow bridge that solve
 
 ### 1.3 Deployment context
 
-Spendula runs on the user's home server, accessible over Tailscale at `https://spendula.example.com`, reverse-proxied by Caddy (using Caddy's Tailscale integration for automatic TLS). It is not exposed to the public internet.
+Spendula runs on the operator's home server, accessible over Tailscale at `https://spendula.example.com`. It is not exposed to the public internet.
+
+**Deployment model**: three-container Docker Compose stack (`app`, `web`, `db`) fronted by the host's existing Caddy instance. Only the `web` container publishes a port (`127.0.0.1:8765`); `app` and `db` stay on the compose internal network. The host's Caddy reverse-proxies `spendula.example.com` → `localhost:8765`. Caddy's Tailscale integration provides automatic TLS. The Caddy configuration lives on the host, not in this repository; deployment docs ship a template snippet the operator adds to their existing Caddyfile.
+
+**Local development** is bare metal on macOS (Homebrew Postgres 18, system PHP 8.4). No Docker locally. This deliberate asymmetry keeps dev fast while keeping prod hermetic.
 
 External network calls:
 
@@ -65,31 +69,38 @@ These are the load-bearing decisions. Everything downstream defers to them.
 
 ### 3.1 Tech stack
 
-- **Backend**: Laravel (current LTS), PHP 8.3+
-- **Database**: PostgreSQL 16+
+- **Backend**: Laravel 13 on PHP 8.4
+- **Database**: PostgreSQL 18
 - **Queue / Scheduler**: None in v1. Artisan commands are invoked manually.
 - **HTTP client**: Laravel's `Http` facade (Guzzle)
 - **JWT**: `firebase/php-jwt`
-- **Frontend**: Blade for the callback landing page only. No JavaScript framework, no build pipeline. Review is CLI-only.
-- **Testing**: PHPUnit or Pest
+- **Frontend**: Blade for the OAuth callback landing page only. No JavaScript framework, no build pipeline. Review is CLI-only.
+- **Testing**: PHPUnit
 - **Static analysis**: PHPStan level 8
 - **Formatting**: Laravel Pint, default preset
+- **Prod web server**: nginx:alpine in a container, FastCGI to php-fpm. No web server in local dev.
+
+**Local development** runs bare metal on the operator's Mac (Homebrew PostgreSQL 18, system PHP 8.4). Artisan commands are invoked directly; the one HTTP route (OAuth callback) runs via `php artisan serve` when needed. No Docker, no containers, no reverse proxy.
+
+**Production** runs a three-container Docker Compose stack (see §13). Same PHP and Postgres versions as local, pinned at the container level.
 
 ### 3.2 Process model
 
-Spendula exposes one HTTP route (the OAuth callback) and a set of artisan commands:
+Spendula exposes one HTTP route (the OAuth callback) and a set of artisan commands. Each command below is tagged with its phase-1 state: **real** = fully implemented in phase 1; **stub** = exists as an artisan command but prints "not yet implemented" until its feature lands.
 
-- `spendula:banks:sync` — reconcile `banks` table with `config/spendula-banks.php`
-- `spendula:auth:start {bank_slug}` — generate a consent URL for a bank
-- `spendula:accounts:map` — interactive mapping of bank accounts to YNAB accounts
-- `spendula:sync [--bank=slug]` — fetch new transactions
-- `spendula:review` — interactive CLI queue for Approve/Skip/Transfer
-- `spendula:push` — push approved transactions to YNAB
-- `spendula:status` — dashboard: consent expiry, queued transactions, last sync/push times
-- `spendula:convert-pending` — retry failed currency conversions for tracking-account transactions
-- `spendula:tracking:snapshot [--account=id]` — compute and push tracking-account balance snapshots to YNAB
+- `spendula:banks:sync` — reconcile `banks` table with `config/spendula-banks.php` — **real in phase 1**
+- `spendula:auth:start {bank_slug}` — generate a consent URL for a bank — **real in phase 1**
+- `spendula:accounts:map` — interactive mapping of bank accounts to YNAB accounts — **stub in phase 1** (phase 1 has one bank, one account; mapping is handled by a one-off seed or inline config)
+- `spendula:sync [--bank=slug]` — fetch new transactions — **real in phase 1** (on-budget flow only; tracking-account path is phase-2)
+- `spendula:review` — interactive CLI queue for Approve/Skip/Transfer — **real in phase 1**
+- `spendula:push` — push approved transactions to YNAB — **real in phase 1**
+- `spendula:status` — dashboard: consent expiry, queued transactions, last sync/push times — **stub in phase 1**
+- `spendula:convert-pending` — retry failed currency conversions for tracking-account transactions — **stub in phase 1** (no multi-currency in phase 1)
+- `spendula:tracking:snapshot [--account=id]` — compute and push tracking-account balance snapshots — **stub in phase 1** (no tracking accounts in phase 1)
 
-Every command acquires an **advisory lock** (`pg_try_advisory_lock` with a command-specific key) before doing work. Concurrent invocations exit immediately with a message rather than racing.
+All stubs exist from phase 1 onward so the command surface is stable; callers and docs don't need to change when stubs become real.
+
+Every real command acquires an **advisory lock** (`pg_try_advisory_lock` with a command-specific key) before doing work. Concurrent invocations exit immediately with a message rather than racing.
 
 ### 3.3 Data flow (happy path, on-budget account)
 
@@ -544,6 +555,8 @@ Enable Banking's `/accounts/{uid}/transactions` returns a `continuation_key` whe
 
 Rate limits: Enable Banking imposes per-account-per-endpoint limits (historically ~4/day for transactions). For weekly manual syncs, this is not a concern. If a 429 is received mid-pagination, persist the continuation key and abort cleanly.
 
+**Testing pagination in phase 1**: Mock ASPSP seeds only one transaction per account by default. To exercise pagination without real bank data, create multiple mock accounts via the Enable Banking control panel (`cp/mock-aspsp`) and seed each with distinct transactions. Alternatively, recorded fixtures from sandbox Nordea (not Mock — its semantic quirks are documented in `spike/FINDINGS.md`) should be used for unit testing the match-update-or-insert algorithm across paginated responses.
+
 ### 6.7 Dedup hash
 
 `dedup_hash` is stored for **traceability and audit**, not as the primary match key. It's a convenience for debugging ("did I already see this?") and as a fallback index.
@@ -722,7 +735,7 @@ Transfers involving RON accounts are even simpler: the RON side is on a tracking
      - (No `access_scope` field; see spike findings — omitting it defaults to all available scopes)
    - Prints the returned `url` to the terminal.
 3. Operator opens URL in browser, authenticates with bank, approves consent.
-4. Browser is redirected to `https://spendula.example.com/bank/callback?code=<code>&state=<state>`.
+4. Browser is redirected to `https://spendula.example.com/banking/callback?code=<code>&state=<state>`.
 
 ### 9.2 Callback handler
 
@@ -758,13 +771,23 @@ When v2 adds a web review UI, real auth gets designed then.
 
 ### 9.5 Production Enable Banking setup
 
-Production app registration (separate from sandbox) requires additional metadata that sandbox does not:
+Production app registration is separate from sandbox. The production app is what processes real consent flows against real banks; sandbox is for development against Mock ASPSP and sandbox Nordea.
 
-- `gdpr_email`: contact email for GDPR inquiries
-- `privacy_url`: link to a privacy policy
-- `terms_url`: link to terms of service
+**Required form fields for the production application:**
 
-For single-user self-hosted deployment these can be minimal static pages on the same server (e.g. `https://spendula.example.com/privacy`). Production apps start in "pending" state and must be either contractually onboarded or activated via IBAN whitelisting (free tier path). The README must walk the operator through both prerequisites and whitelisting their own IBANs.
+| Field | Value |
+|---|---|
+| `allowed_redirect_urls` | `https://spendula.example.com/banking/callback` plus any dev fallbacks (`http://localhost:8000/banking/callback`, `https://spendula.ddev.site/banking/callback`, `https://localhost/banking/callback`) |
+| Application description | Short paragraph describing Spendula as a single-user self-hosted personal-finance tool that uses AIS only (no PIS), is not offered as a service to third parties, and processes only the operator's own bank data |
+| `gdpr_email` | A real monitored email address |
+| `privacy_url` | A publicly-reachable URL serving a privacy policy |
+| `terms_url` | A publicly-reachable URL serving terms of service |
+
+**Hosting privacy and terms**: Privacy and terms URLs must be publicly reachable for Enable Banking's validation to succeed. Tailnet-only URLs will not pass. The recommended host is GitHub Pages (free, static, persistent). Template content for both documents is provided in the repository under `docs/legal/` and should be deployed to a separate `spendula-legal` repo on GitHub Pages before the application form is submitted.
+
+**Activation path**: Production apps start in "pending" state. Spendula's intended activation path is the free-tier IBAN-whitelisting route (not contractual onboarding), reflecting the single-user self-hosted use case. After registration, the operator whitelists their own IBANs via the Enable Banking dashboard; once whitelisted, real bank flows work against those specific IBANs at no charge.
+
+**Phase boundary**: Phase 1 uses **only Mock ASPSP** in the sandbox environment. Production Enable Banking setup is a **phase 2** prerequisite and is deliberately decoupled from phase-1 implementation. The README must walk the operator through production registration and IBAN whitelisting when phase 2 begins; phase 1 can ship and be validated end-to-end without it.
 
 ---
 
@@ -825,42 +848,100 @@ For single-user self-hosted deployment these can be minimal static pages on the 
 
 ## 12. Testing strategy
 
-- **Unit tests:**
-  - Money math: milliunit conversions, `bcmath` edge cases, currency-aware display formatting.
-  - Counterparty resolution: given a fixture EB transaction, verify resolution level.
-  - Dedup hash and import_id: stability (same input → same output), disambiguation via `occurrence`.
-  - Sync window computation.
-  - Memo construction (transfer prefix, truncation).
-- **Integration tests (fixture-based, not live):**
-  - End-to-end sync with recorded EB response including pagination. Verify DB state, including matching-not-inserting on re-sync.
-  - End-to-end push with recorded YNAB responses (success, duplicate, partial).
-  - Transfer state → memo prefix end-to-end.
-  - Import cutoff: transactions before cutoff auto-skipped.
-  - Consent supersession: new connection correctly transitions old one.
-- **No live-API tests in CI.** Manual sandbox testing is the operator's responsibility before each release.
-- **PHPStan level 8 passes.** Pint formatting is enforced.
+### 12.1 Test fixture sources
+
+Two distinct sources, used for different purposes:
+
+- **Mock ASPSP** (sandbox) — used for **end-to-end flow validation** only. Phase 1's primary integration target. Semantically unreliable per `spike/FINDINGS.md` (creditor/debtor inversion, null `identification_hash` in some configurations, only one transaction per account by default). Fine for "does the pipe work", not fine for "does the parsing logic work".
+- **Sandbox Nordea** (sandbox, but a real-bank-like ASPSP) — used to record fixtures for **correctness testing** of the match-update-or-insert algorithm, counterparty resolution ladder, pagination handling, and SEPA direction semantics. Recorded fixtures live under `tests/fixtures/enablebanking/` and are checked in.
+
+Live API tests do not run in CI. Manual sandbox testing is the operator's responsibility before each release.
+
+### 12.2 Unit tests
+
+- Money math: milliunit conversions, `bcmath` edge cases, currency-aware display formatting.
+- Counterparty resolution: given a fixture EB transaction, verify resolution level (tested against sandbox Nordea fixtures, not Mock).
+- Dedup hash and `import_id`: stability (same input → same output), disambiguation via `occurrence`.
+- Sync window computation.
+- Memo construction (transfer prefix, truncation).
+
+### 12.3 Integration tests (fixture-based)
+
+- End-to-end sync with recorded sandbox-Nordea response including pagination. Verify DB state, including matching-not-inserting on re-sync.
+- End-to-end push with recorded YNAB responses (success, duplicate, partial).
+- Transfer state → memo prefix end-to-end.
+- Import cutoff: transactions before cutoff auto-skipped.
+- Consent supersession: new connection correctly transitions old one.
+
+### 12.4 Smoke tests
+
+- Every stub artisan command has a smoke test asserting it runs and exits cleanly (including the phase-1 stubs that just print "not yet implemented"). This catches accidental breakage of the command surface.
+
+### 12.5 Static analysis
+
+- PHPStan level 8 passes.
+- Pint formatting is enforced.
 
 ---
 
 ## 13. Deployment
 
-- Ubuntu LTS home server.
-- PostgreSQL 16.
-- PHP 8.3 + PHP-FPM.
-- Caddy with Tailscale plugin, auto-TLS on `spendula.example.com`.
-- Artisan commands via SSH.
+### 13.1 Local development
 
-Deploy process:
+Bare metal on macOS. No containers.
+
+- **PHP 8.4** via Homebrew.
+- **PostgreSQL 18** via Homebrew, local connection on default port.
+- Artisan commands invoked directly in the terminal.
+- The single HTTP route (OAuth callback) runs via `php artisan serve` on `http://localhost:8000` when needed (during initial bank connection testing).
+- `.env` holds local dev credentials; never committed.
+
+Phase 1 does not require the production stack to be running locally. The production Docker build is verified by `docker compose -f docker-compose.prod.yml build` but not started locally.
+
+### 13.2 Production
+
+**Three-container Docker Compose stack** running on the operator's home server alongside other self-hosted services.
+
+**Services:**
+
+- `app` — builds from `Dockerfile` (multi-stage: Composer install → runtime on `php:8.4-fpm-alpine` with `pdo_pgsql`, `pcntl`, `opcache`, `bcmath`). No published port. Exposes port 9000 on the compose internal network.
+- `web` — `nginx:alpine` with a site config that FastCGI-passes to `app:9000`. Mounts the `public/` directory from the app container. **Publishes `127.0.0.1:8765:80`** — bound to loopback only; not reachable from the LAN.
+- `db` — `postgres:18-alpine` with a named volume for data. No published port. Only reachable by `app` on the compose internal network.
+
+**Host Caddy** (already running, shared with other services) reverse-proxies `spendula.example.com` → `127.0.0.1:8765`. Caddy handles TLS via its Tailscale integration. The Caddy configuration lives on the host, not in this repo; deployment docs ship a template snippet like:
+
+```
+spendula.example.com {
+    reverse_proxy localhost:8765
+}
+```
+
+The operator adds this block to the host Caddyfile when first deploying.
+
+**Why port 8765 on loopback**: keeps the stack isolated from the host network. Caddy is the sole reachability point; Docker's port publishing is minimized to a single private binding. No tailnet or LAN exposure of the raw compose services.
+
+**Secrets**: `.env` on the host is never committed. The `app` container reads it via the standard Laravel mechanism.
+
+**Artisan in production**: `docker compose -f docker-compose.prod.yml exec app php artisan spendula:<command>`. Wrap in a shell alias or tiny script on the host for the weekly ritual.
+
+### 13.3 Deploy process
 
 ```
 git pull
-composer install --no-dev --optimize-autoloader
-php artisan migrate --force
-php artisan config:cache && php artisan route:cache
-systemctl reload php-fpm
+docker compose -f docker-compose.prod.yml build app
+docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml exec app php artisan migrate --force
+docker compose -f docker-compose.prod.yml exec app php artisan config:cache
+docker compose -f docker-compose.prod.yml exec app php artisan route:cache
 ```
 
-Backups: PostgreSQL dump nightly via existing home-server backup regime. Private key file and `.env` included in backups.
+No rolling deploys, no zero-downtime requirements — single-user tool, brief downtime during migration is fine.
+
+### 13.4 Backup
+
+- PostgreSQL dump nightly via the host's existing backup regime (the named `db` volume is backed up as part of the host's Docker volume backup, or via `pg_dump` inside the container piped to host storage).
+- Enable Banking private key file and `.env` on the host are included in backups.
+- Raw transaction JSON lives in the DB (`transactions.raw_payload`); backup of the DB is backup of the data.
 
 ---
 
@@ -938,20 +1019,60 @@ Priority will be dictated by actual v1 use. Rough ordering:
 
 ## 16. Implementation ordering (guidance for Claude Code)
 
-Build in this sequence. Ship each stage before moving to the next; each stage should run end-to-end against sandbox before the next begins.
+The implementation is split into phases. Phase 1 ships a working end-to-end slice (one bank = Mock ASPSP, one YNAB account, sync + review + push). Later phases broaden scope to real banks, tracking accounts, and supporting commands.
 
-1. **Foundation**: Laravel skeleton, PostgreSQL connection, `.env` structure, logging setup, Pint + PHPStan.
-2. **Schema**: all migrations. `banks`, `bank_connections`, `bank_accounts`, `bank_account_identifiers`, `bank_account_sessions`, `bank_account_sync_state`, `auth_requests`, `sync_runs`, `sync_run_errors`, `push_runs`, `push_run_errors`, `exchange_rates`, `tracking_snapshots`, `transactions`.
-3. **Banks seed**: `config/spendula-banks.php`, `spendula:banks:sync` command, five banks.
-4. **Enable Banking client**: JWT signing (extracted from spike `lib.php`), HTTP wrapper, basic `GET /application` sanity check as an artisan command.
-5. **Auth flow**: `spendula:auth:start`, callback route, `POST /sessions`, connection + account + identifier upsert. Callback renders a simple Blade page.
-6. **Accounts mapping**: `spendula:accounts:map`. Requires YNAB client skeleton to list YNAB accounts.
-7. **Sync (on-budget)**: implement match-update-or-insert with pagination. EUR accounts only for now.
-8. **Review CLI**: Approve / Skip / Transfer / Details / Quit.
-9. **Push**: YNAB bulk create, retry-safe error handling, `push_runs` logging.
-10. **Tracking accounts**: sync for non-EUR accounts (store as `tracking`), `tracking:snapshot` command.
-11. **Status command**: dashboard.
-12. **Tests**: unit suite, fixture integration tests.
-13. **Docs**: README with full setup walkthrough.
+### 16.1 Phase 1 — minimum viable pipe
 
-At each stage, commit frequently and run the full flow end-to-end before moving on. Stage 7 is the highest-risk point (the match/update algorithm is the most complex); plan on a day of careful work there.
+Goal: `artisan spendula:sync` pulls transactions from Mock ASPSP into Postgres, `artisan spendula:review` lets the operator Approve/Skip/Transfer them at the terminal, `artisan spendula:push` sends approved ones to a YNAB test plan. Plus a working production Docker build.
+
+1. **Foundation**: Laravel 13 skeleton, PostgreSQL 18 connection, `.env` + `.env.example`, logging setup, Pint + PHPStan level 8 config.
+2. **Schema (all tables)**: all migrations from §4 in one pass, including tables whose features are phase-2 (`exchange_rates`, `tracking_snapshots`). Schema stability matters more than deferring tables.
+3. **Banks seed**: `config/spendula-banks.php` with just `mock` for now (or all five with only `mock` marked `active: true`); `spendula:banks:sync` command.
+4. **Enable Banking client**: JWT signing (extracted from spike `lib.php`), `Http`-based wrapper in `app/Services/EnableBanking/`, basic `GET /application` sanity check wired into the foundation.
+5. **Auth flow**: `spendula:auth:start mock`, callback route at `/banking/callback`, `POST /sessions`, connection + account + identifier upsert. Callback renders a simple Blade success page.
+6. **Account-to-YNAB mapping**: for phase 1, this is a one-off seed (inline config, direct DB insert via a dedicated artisan command `spendula:accounts:seed-mock`, or a migration). The full interactive `spendula:accounts:map` command ships as a phase-2 stub that prints "not yet implemented".
+7. **Sync (on-budget only)**: implement match-update-or-insert with pagination. Mock ASPSP only. **Highest-risk step**; budget a full day; write integration tests against seeded Mock fixtures or recorded sandbox-Nordea fixtures *before* the sync logic itself.
+8. **Review CLI**: Approve / Skip / Transfer / Details / Quit. Advisory lock on entry.
+9. **Push**: YNAB bulk create against `/plans/{plan_id}/transactions`, retry-safe error handling, `push_runs` logging. Advisory lock on entry.
+10. **Stubs for deferred commands**: `spendula:accounts:map`, `spendula:status`, `spendula:convert-pending`, `spendula:tracking:snapshot` all exist as artisan commands that print "not yet implemented (phase N)" and have passing smoke tests.
+11. **Production Docker artifacts**: `Dockerfile`, `docker/nginx/default.conf`, `docker-compose.prod.yml`, `.dockerignore`. Verified by `docker compose -f docker-compose.prod.yml build`. Not started locally.
+12. **Tests**: unit suite covering money math, counterparty resolution, dedup hash, `import_id`, memo construction, sync window. Integration tests covering sync idempotency, push round-trip, transfer memo prefix. Smoke tests for every artisan command including stubs.
+13. **Docs**: `README.md` covering local dev setup and prod deploy; `docs/DEPLOY.md` with the host Caddy snippet template; `CLAUDE.md` at repo root orienting future sessions.
+
+Phase 1 is complete when: (a) Mock ASPSP seeded with N>1 transactions flows cleanly through sync → review → push into YNAB, verifiable in the YNAB web UI; (b) re-running sync produces 0 inserts (idempotency); (c) `docker compose build` succeeds; (d) `php artisan test` green; (e) PHPStan level 8 green.
+
+### 16.2 Phase 2 — real banks and production Enable Banking
+
+Goal: replace Mock with real banks. Requires production Enable Banking app registration and IBAN whitelisting (§9.5).
+
+14. Production Enable Banking app registration: privacy/terms pages deployed to GitHub Pages; application form submitted; IBAN whitelisting completed.
+15. `spendula:accounts:map` interactive implementation.
+16. Additional bank configs activated in `config/spendula-banks.php` (Millennium BCP first — highest transaction volume).
+17. Recorded fixtures captured from each real bank's first sync for use in regression tests.
+18. Counterparty resolution ladder validation per bank: after a week of real data, check `SELECT bank_slug, counterparty_resolution_level, count(*) FROM transactions GROUP BY 1, 2` and tune ladder if any bank sits predominantly at level 2+.
+
+### 16.3 Phase 3 — tracking accounts and multi-currency
+
+Goal: RON bank accounts (ING RO Personal, ING RO Business, UniCredit RO) sync into Spendula and push balance snapshots into YNAB tracking accounts.
+
+19. Exchange rate client (default: frankfurter.app).
+20. `exchange_rates` table usage; caching logic.
+21. Sync path for tracking accounts: inserts with `status = tracking` instead of `fetched`.
+22. `spendula:tracking:snapshot` real implementation.
+23. Revolut activation (if not already on-budget-only).
+
+### 16.4 Phase 4 — supporting commands
+
+Goal: the full operational surface.
+
+24. `spendula:status` dashboard.
+25. `spendula:convert-pending` real implementation.
+26. Consent expiry surfacing in `status` with T-14 / T-7 / T-3 warnings.
+
+### 16.5 After phase 4
+
+At this point, v1 as specified in §14 is complete. Future work maps to the v2+ roadmap in §15.
+
+### 16.6 Ongoing discipline
+
+At every stage: commit frequently, run the full flow end-to-end in sandbox before moving on, keep PHPStan green, keep tests green. **Stage 7 is the make-or-break**; if the match-update-or-insert algorithm is subtly wrong, everything downstream inherits the bug.
