@@ -1,0 +1,74 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Local dev
+.env
+.env.*.local
+.env.backup
+.env.production
+.claude
+.DS_Store
+.editorconfig
+.fleet
+.idea
+.nova
+.vscode
+.zed
+.phpunit.cache
+.phpunit.result.cache
+.phpactor.json
+
+# Never bake the EB private key into the image; bind-mounted at runtime instead.
+private.key
+public.crt
+storage/keys/*
+!storage/keys/.gitkeep
+
+# Dependencies are installed fresh in the builder stage.
+vendor
+node_modules
+
+# Build outputs
+public/build
+public/hot
+public/storage
+
+# Spike and docs are reference material for humans, not runtime code.
+spike
+docs
+
+# Tests are not needed in the prod image.
+tests
+phpunit.xml
+
+# Local Laravel scratch
+storage/logs/*
+!storage/logs/.gitignore
+storage/framework/cache/*
+!storage/framework/cache/.gitignore
+storage/framework/sessions/*
+!storage/framework/sessions/.gitignore
+storage/framework/views/*
+!storage/framework/views/.gitignore
+
+# Package/route/config caches. Regenerated in the image so they reflect the
+# no-dev vendor dir, not whatever the host had.
+bootstrap/cache/*.php
+!bootstrap/cache/.gitignore
+
+# Composer/npm artifacts we don't want baked in from the host.
+composer.phar
+npm-debug.log
+yarn-error.log
+
+# Docker artifacts themselves.
+Dockerfile
+docker-compose*.yml
+docker
+.dockerignore
+
+# Misc
+README.md
+CLAUDE.md
