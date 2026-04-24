@@ -13,13 +13,7 @@ class StubCommandsTest extends TestCase
     public static function stubCommands(): array
     {
         return [
-            'spendula:banks:sync' => ['spendula:banks:sync'],
-            'spendula:auth:start' => ['spendula:auth:start'],
             'spendula:accounts:map' => ['spendula:accounts:map'],
-            'spendula:accounts:seed-mock' => ['spendula:accounts:seed-mock'],
-            'spendula:sync' => ['spendula:sync'],
-            'spendula:review' => ['spendula:review'],
-            'spendula:push' => ['spendula:push'],
             'spendula:status' => ['spendula:status'],
             'spendula:convert-pending' => ['spendula:convert-pending'],
             'spendula:tracking:snapshot' => ['spendula:tracking:snapshot'],
