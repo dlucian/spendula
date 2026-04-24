@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Services\EnableBanking\Client as EnableBankingClient;
 use App\Services\EnableBanking\Jwt as EnableBankingJwt;
+use App\Services\Ynab\Client as YnabClient;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 
@@ -20,6 +21,8 @@ class AppServiceProvider extends ServiceProvider
                 (string) config('spendula.enable_banking.base_url'),
             ),
         );
+
+        $this->app->singleton(YnabClient::class, fn () => YnabClient::fromConfig());
     }
 
     public function boot(): void
