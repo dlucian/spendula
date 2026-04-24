@@ -1,0 +1,13 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    paths:
+        - app
+        - database/migrations
+
+    level: 8
+
+    checkModelProperties: true
+
+    noEnvCallsOutsideOfConfig: false
