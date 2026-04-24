@@ -62,7 +62,7 @@ The EB **sandbox** app is already configured with `http://localhost:8000/banking
 
 ### Artisan commands
 
-Phase-1 real (to be implemented):
+Phase-1 (implemented):
 
 | Command | Purpose |
 |---|---|
@@ -70,7 +70,7 @@ Phase-1 real (to be implemented):
 | `spendula:auth:start {bank_slug}` | Start an EB consent flow; prints the URL to open. |
 | `spendula:accounts:seed-mock` | One-off phase-1 mapper: wire a bank account to a YNAB account. |
 | `spendula:sync [--bank=slug]` | Pull new transactions from Enable Banking. |
-| `spendula:review` | Terminal queue: Approve / Skip / Transfer. |
+| `spendula:review [--bulk-approve-trivial]` | Terminal queue: Approve / Skip / Transfer. |
 | `spendula:push` | Send approved transactions to YNAB. |
 
 Phase-2+ stubs (ship as "not yet implemented"):
@@ -82,7 +82,41 @@ Phase-2+ stubs (ship as "not yet implemented"):
 | `spendula:status` | 4 (dashboard) |
 | `spendula:convert-pending` | 4 (retry failed FX conversions) |
 
-All commands are currently stubs. See `docs/PLAN.md` for phase-by-phase acceptance criteria.
+See `docs/PLAN.md` for phase-by-phase acceptance criteria.
+
+### Phase-1 end-to-end walkthrough
+
+Against Mock ASPSP in the EB sandbox:
+
+```bash
+# 1. Seed the banks catalogue (mock only in phase 1).
+php artisan spendula:banks:sync
+
+# 2. Start EB consent flow. Opens a URL; complete it in a browser.
+#    Make sure `php artisan serve` is running on :8000 so the callback lands.
+php artisan spendula:auth:start mock
+
+# 3. After the callback success page, map the discovered account(s) to YNAB.
+#    Get ynab_account_id from `https://api.ynab.com/v1/plans/{plan_id}/accounts`.
+php artisan spendula:accounts:seed-mock \
+    --bank-account-id=<uuid-from-callback-page> \
+    --ynab-account-id=<uuid-from-ynab> \
+    --display-name="Main checking" \
+    --import-cutoff-date=2026-01-01
+
+# 4. Sync transactions.
+php artisan spendula:sync
+
+# 5. Review them in the terminal. a=approve, s=skip, t=transfer, d=details, q=quit.
+php artisan spendula:review
+
+# 6. Push approved ones to YNAB.
+php artisan spendula:push
+```
+
+Mock ASPSP ships with zero seeded accounts — create at least one at
+<https://enablebanking.com/cp/mock-aspsp> before step 2, or the consent flow
+will silently error (see `spike/FINDINGS.md` #1).
 
 ## Production
 
@@ -101,4 +135,14 @@ See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the deploy run book, the host Caddy s
 
 ## Project status
 
-Phase 0 (scaffolding) is complete: Laravel 13 + PG 18 bootstrap, artisan command surface as stubs, production Docker build verified. Phase 1 (minimum viable pipe against Mock ASPSP) is next.
+- Phase 0 — scaffolding: **done**.
+- Phase 1 — Mock ASPSP end-to-end (sync → review → push): **done**. All
+  SPEC §4 tables migrated; EB and YNAB clients with typed error surfaces;
+  match-update-or-insert with occurrence disambiguation; review CLI with
+  raw-mode TTY and bulk-approve-trivial; push with retry-safe
+  `duplicate_import_ids` handling.
+- Phase 2 — real banks behind the production EB app: **pending**. Gated on
+  EB production app approval (wall-time, outside Claude's control). See
+  `docs/PLAN.md` §2.
+- Phase 3 — tracking accounts + multi-currency: **pending**.
+- Phase 4 — `spendula:status`, `convert-pending`, docs polish: **pending**.
