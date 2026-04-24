@@ -31,13 +31,21 @@ class Client
         private readonly string $baseUrl,
     ) {}
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     *
+     * @throws Exceptions\EnableBankingException
+     */
     public function application(): array
     {
         return $this->requestJson('GET', '/application');
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     *
+     * @throws Exceptions\EnableBankingException
+     */
     public function aspsps(): array
     {
         return $this->requestJson('GET', '/aspsps');
@@ -46,19 +54,29 @@ class Client
     /**
      * @param  array<string, mixed>  $body
      * @return array<string, mixed>
+     *
+     * @throws Exceptions\EnableBankingException
      */
     public function startAuth(array $body): array
     {
         return $this->requestJson('POST', '/auth', body: $body);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     *
+     * @throws Exceptions\EnableBankingException
+     */
     public function exchangeCode(string $code): array
     {
         return $this->requestJson('POST', '/sessions', body: ['code' => $code]);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     *
+     * @throws Exceptions\EnableBankingException
+     */
     public function accountTransactions(
         string $uid,
         ?string $dateFrom = null,

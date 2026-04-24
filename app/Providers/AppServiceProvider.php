@@ -2,21 +2,26 @@
 
 namespace App\Providers;
 
+use App\Services\EnableBanking\Client as EnableBankingClient;
+use App\Services\EnableBanking\Jwt as EnableBankingJwt;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
-    /**
-     * Register any application services.
-     */
     public function register(): void
     {
-        //
+        $this->app->singleton(EnableBankingJwt::class, fn () => EnableBankingJwt::fromConfig());
+
+        $this->app->singleton(
+            EnableBankingClient::class,
+            fn (Application $app) => new EnableBankingClient(
+                $app->make(EnableBankingJwt::class),
+                (string) config('spendula.enable_banking.base_url'),
+            ),
+        );
     }
 
-    /**
-     * Bootstrap any application services.
-     */
     public function boot(): void
     {
         //
