@@ -33,9 +33,17 @@ Flat. This folder **is** the Laravel application root.
 - **Production**: three-container Compose stack (`app`, `web`, `db`). Only `web` publishes a port, bound to `127.0.0.1:8765` on the host. The host's existing Caddy (already fronting other services, already Tailscale-integrated) reverse-proxies `spendula.example.com` → `localhost:8765`. The Caddy config lives on the server, not in this repo; `docs/DEPLOY.md` ships a template snippet the operator adds to their Caddyfile.
 - Secrets on host (`.env`, `private.key`) are bind-mounted **read-only** into the `app` container.
 
-## Phase 1 scope
+## Phase 1 status
 
-Mock ASPSP only. One bank, one YNAB account, end-to-end via three real artisan commands (`spendula:sync`, `spendula:review`, `spendula:push`) plus `banks:sync`, `auth:start`, and the `/banking/callback` route. Other commands (`accounts:map`, `status`, `convert-pending`, `tracking:snapshot`) ship as stubs so the command surface is stable. See `docs/PLAN.md` for phase 2+.
+**Implemented** (merged on branch `phase-1`): Mock ASPSP end-to-end via six
+real artisan commands — `spendula:banks:sync`, `spendula:auth:start`,
+`spendula:accounts:seed-mock`, `spendula:sync`, `spendula:review`,
+`spendula:push` — plus the `/banking/callback` route. Remaining commands
+(`accounts:map`, `status`, `convert-pending`, `tracking:snapshot`) still
+print "not yet implemented" and pass their smoke tests.
+
+Phase-2 work starts once the production Enable Banking app is approved
+(SPEC §9.5, PLAN §2a); that's the wall-time gate, not engineering.
 
 ## Conventions
 
@@ -49,6 +57,9 @@ Mock ASPSP only. One bank, one YNAB account, end-to-end via three real artisan c
 - **Callback path is `/banking/callback`** (not `/bank/callback`). Matches the registered URLs in the EB sandbox app.
 - **All YNAB paths use `/plans/{plan_id}/…`**, never the deprecated `/budgets/{budget_id}/…`. Config key is `SPENDULA_YNAB_PLAN_ID`. (The spike used the old path; don't copy that.)
 - **Counterparty resolution**: SEPA-correct first (`CRDT → debtor`, `DBIT → creditor`), inverted as fallback. Against Mock ASPSP everything will resolve at level 1, not 0 — this is expected.
+- **Postgres session timezone is UTC.** Set via `config/database.php`'s `pgsql.timezone => env('DB_TIMEZONE', 'UTC')`. Without this, `timestampTz` columns round-trip through the server's local tz and every `expires_at` check silently drifts by the UTC offset. Don't remove it.
+- **Tests run against a real Postgres** (`spendula_test` on 127.0.0.1), not SQLite. Migrations lean on `jsonb`, partial unique indexes, and CHECK constraints with Postgres-specific predicate syntax that SQLite can't honour. `RefreshDatabase` handles the per-test rollback.
+- **`$this->artisan()` is a PendingCommand, not an immediate execution.** `->assertSuccessful()` only sets the expected exit code — the command runs on destruct. Chain directly (`$this->artisan(…)->assertSuccessful()`), don't capture into a variable, or DB state reads before destruct will return pre-execution values.
 
 ## Sandbox redirect URLs (already registered in the EB sandbox app)
 
