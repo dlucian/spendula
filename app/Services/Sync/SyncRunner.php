@@ -1,0 +1,325 @@
+<?php
+
+namespace App\Services\Sync;
+
+use App\Enums\BankConnectionStatus;
+use App\Enums\SyncErrorType;
+use App\Enums\YnabAccountType;
+use App\Models\Bank;
+use App\Models\BankAccount;
+use App\Models\BankAccountSession;
+use App\Models\BankAccountSyncState;
+use App\Models\BankConnection;
+use App\Models\SyncRun;
+use App\Models\SyncRunError;
+use App\Services\EnableBanking\Client;
+use App\Services\EnableBanking\Exceptions\EnableBankingAuthException;
+use App\Services\EnableBanking\Exceptions\EnableBankingException;
+use App\Services\EnableBanking\Exceptions\EnableBankingRateLimitException;
+use App\Services\EnableBanking\Exceptions\EnableBankingRevokedException;
+use App\Services\EnableBanking\Exceptions\EnableBankingServerException;
+use App\Services\Locks\AdvisoryLock;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
+use Throwable;
+
+/**
+ * Orchestrates spendula:sync. SPEC §6.1, §6.6, §10.1.
+ *
+ * For every active bank_connection, iterate its bank_account_sessions,
+ * determine the fetch window (§6.2), paginate transactions, and hand each
+ * BOOK transaction to MatchUpdateOrInsert. Persist the sync state after
+ * every page so an interrupted run resumes cleanly (§6.6). Pagination is
+ * capped at 50 pages per account as a defensive guard against loops.
+ *
+ * Error handling follows SPEC §10.1: 401 is a hard fail, 403 revokes the
+ * connection, 429 and 5xx abort this account cleanly and continue with
+ * the next.
+ *
+ * Tracking accounts are explicitly out of scope in phase 1 (they use
+ * balance snapshots in phase 3); this runner skips them.
+ */
+class SyncRunner
+{
+    /** Defensive cap against misbehaving continuation_key pagination. */
+    private const int MAX_PAGES_PER_ACCOUNT = 50;
+
+    public function __construct(
+        private readonly Client $client,
+        private readonly MatchUpdateOrInsert $matchUpdateOrInsert,
+    ) {}
+
+    public function run(?string $bankSlug = null): SyncResult
+    {
+        /** @var SyncResult $result */
+        $result = AdvisoryLock::withLock(
+            AdvisoryLock::SYNC,
+            fn (): SyncResult => $this->runLocked($bankSlug),
+        );
+
+        return $result;
+    }
+
+    private function runLocked(?string $bankSlug): SyncResult
+    {
+        $syncRun = SyncRun::query()->create([
+            'bank_slug' => $bankSlug,
+            'started_at' => Carbon::now(),
+        ]);
+
+        $counters = ['inserted' => 0, 'updated' => 0, 'deduped' => 0, 'errors' => 0];
+
+        $connections = BankConnection::query()
+            ->where('status', BankConnectionStatus::Active->value)
+            ->when($bankSlug !== null, fn ($q) => $q->where('bank_slug', $bankSlug))
+            ->with(['bank'])
+            ->get();
+
+        foreach ($connections as $connection) {
+            try {
+                $this->syncConnection($connection, $syncRun, $counters);
+            } catch (EnableBankingAuthException $e) {
+                $this->logError($syncRun, null, SyncErrorType::Other, $e);
+                $counters['errors']++;
+                // Hard fail per SPEC §10.1 — propagate so the caller exits non-zero.
+                $this->finaliseRun($syncRun, $counters);
+                throw $e;
+            }
+        }
+
+        $this->finaliseRun($syncRun, $counters);
+
+        return new SyncResult($syncRun->refresh(), $counters['inserted'], $counters['updated'], $counters['deduped'], $counters['errors']);
+    }
+
+    /** @param  array{inserted:int,updated:int,deduped:int,errors:int}  $counters */
+    private function syncConnection(BankConnection $connection, SyncRun $syncRun, array &$counters): void
+    {
+        $bank = $connection->bank;
+        if (! $bank instanceof Bank) {
+            return;
+        }
+
+        /** @var Collection<int, BankAccountSession> $sessions */
+        $sessions = BankAccountSession::query()
+            ->where('bank_connection_id', $connection->id)
+            ->with(['bankAccount.syncState'])
+            ->get();
+
+        $anyAccountSynced = false;
+
+        foreach ($sessions as $session) {
+            $account = $session->bankAccount;
+            if (! $account instanceof BankAccount || ! $account->active) {
+                continue;
+            }
+
+            // Tracking accounts use snapshots (phase 3); phase 1 skips them.
+            if ($account->ynab_account_type === YnabAccountType::Tracking) {
+                continue;
+            }
+
+            try {
+                $this->syncAccount($connection, $bank, $session, $account, $syncRun, $counters);
+                $anyAccountSynced = true;
+            } catch (EnableBankingRevokedException $e) {
+                $connection->status = BankConnectionStatus::Revoked;
+                $connection->save();
+                $this->logError($syncRun, $account, SyncErrorType::ConsentExpired, $e);
+                $counters['errors']++;
+
+                return; // all accounts on this connection are now moot
+            } catch (EnableBankingRateLimitException $e) {
+                $this->logError($syncRun, $account, SyncErrorType::RateLimit, $e);
+                $counters['errors']++;
+
+                // Continuation key already persisted by inner loop; move to next account.
+                continue;
+            } catch (EnableBankingServerException $e) {
+                $this->logError($syncRun, $account, SyncErrorType::HttpError, $e);
+                $counters['errors']++;
+
+                continue;
+            } catch (EnableBankingException $e) {
+                $this->logError($syncRun, $account, SyncErrorType::HttpError, $e);
+                $counters['errors']++;
+
+                continue;
+            } catch (Throwable $e) {
+                $this->logError($syncRun, $account, SyncErrorType::Other, $e);
+                $counters['errors']++;
+                Log::warning('Sync threw unexpectedly', [
+                    'event' => 'sync.account.failed',
+                    'bank_slug' => $bank->slug,
+                    'bank_account_id' => $account->id,
+                ]);
+
+                continue;
+            }
+        }
+
+        if ($anyAccountSynced) {
+            $connection->last_synced_at = Carbon::now();
+            $connection->save();
+        }
+    }
+
+    /**
+     * @param  array{inserted:int,updated:int,deduped:int,errors:int}  $counters
+     *
+     * @throws EnableBankingException
+     */
+    private function syncAccount(
+        BankConnection $connection,
+        Bank $bank,
+        BankAccountSession $session,
+        BankAccount $account,
+        SyncRun $syncRun,
+        array &$counters,
+    ): void {
+        $syncState = $account->syncState instanceof BankAccountSyncState
+            ? $account->syncState
+            : BankAccountSyncState::query()->firstOrCreate(
+                ['bank_account_id' => $account->id],
+                ['consecutive_failure_count' => 0],
+            );
+
+        $dateFrom = $this->computeDateFrom($bank, $syncState);
+        $continuationKey = $syncState->last_continuation_key;
+        $pagesVisited = 0;
+
+        do {
+            if ($pagesVisited >= self::MAX_PAGES_PER_ACCOUNT) {
+                $this->logError(
+                    $syncRun,
+                    $account,
+                    SyncErrorType::ParseError,
+                    new \RuntimeException('Aborted after 50 pages — continuation_key pagination suspected loop.'),
+                );
+                $counters['errors']++;
+
+                return;
+            }
+
+            try {
+                $response = $this->client->accountTransactions(
+                    $session->enable_banking_uid,
+                    $dateFrom,
+                    $continuationKey,
+                );
+            } catch (EnableBankingException $e) {
+                // Persist progress before bubbling up so the next run resumes here.
+                $syncState->last_continuation_key = $continuationKey;
+                $syncState->last_sync_error_at = Carbon::now();
+                $syncState->consecutive_failure_count++;
+                $syncState->save();
+
+                throw $e;
+            }
+
+            $pagesVisited++;
+
+            $transactions = is_array($response['transactions'] ?? null) ? $response['transactions'] : [];
+            $maxBookingDate = null;
+
+            foreach ($transactions as $ebTransaction) {
+                if (! is_array($ebTransaction)) {
+                    continue;
+                }
+                $status = isset($ebTransaction['transaction_status']) && is_string($ebTransaction['transaction_status'])
+                    ? $ebTransaction['transaction_status']
+                    : '';
+                if ($status !== 'BOOK') {
+                    continue;
+                }
+
+                $result = $this->matchUpdateOrInsert->apply($account, $ebTransaction);
+                match ($result->outcome) {
+                    ApplyOutcome::Inserted => $counters['inserted']++,
+                    ApplyOutcome::Updated => $counters['updated']++,
+                    ApplyOutcome::Deduped => $counters['deduped']++,
+                };
+
+                $bookingDate = $result->transaction->booking_date;
+                if ($maxBookingDate === null || $bookingDate->greaterThan($maxBookingDate)) {
+                    $maxBookingDate = $bookingDate;
+                }
+            }
+
+            // Persist page-level progress before fetching the next page.
+            if ($maxBookingDate !== null) {
+                if ($syncState->last_fetched_through === null || $maxBookingDate->greaterThan($syncState->last_fetched_through)) {
+                    $syncState->last_fetched_through = $maxBookingDate;
+                }
+            }
+
+            $nextContinuationKey = isset($response['continuation_key']) && is_string($response['continuation_key'])
+                ? $response['continuation_key']
+                : null;
+
+            if ($nextContinuationKey !== null && $nextContinuationKey === $continuationKey) {
+                $this->logError(
+                    $syncRun,
+                    $account,
+                    SyncErrorType::ParseError,
+                    new \RuntimeException('continuation_key did not advance between pages.'),
+                );
+                $counters['errors']++;
+
+                return;
+            }
+
+            $syncState->last_continuation_key = $nextContinuationKey;
+            $syncState->save();
+
+            $continuationKey = $nextContinuationKey;
+        } while ($continuationKey !== null && $continuationKey !== '');
+
+        // Clean finish — clear resume state and reset failure counter.
+        $syncState->last_continuation_key = null;
+        $syncState->last_successful_sync_at = Carbon::now();
+        $syncState->consecutive_failure_count = 0;
+        $syncState->save();
+    }
+
+    /** SPEC §6.2 fetch window. */
+    private function computeDateFrom(Bank $bank, BankAccountSyncState $syncState): string
+    {
+        $lookbackCap = Carbon::today()->subDays($bank->sync_lookback_days);
+
+        if ($syncState->last_fetched_through === null) {
+            return $lookbackCap->toDateString();
+        }
+
+        $overlapStart = $syncState->last_fetched_through->copy()->subDays(7);
+
+        return $overlapStart->greaterThan($lookbackCap)
+            ? $overlapStart->toDateString()
+            : $lookbackCap->toDateString();
+    }
+
+    private function logError(SyncRun $syncRun, ?BankAccount $account, SyncErrorType $type, Throwable $e): void
+    {
+        $httpStatus = $e instanceof EnableBankingException ? $e->httpStatus : null;
+
+        SyncRunError::query()->create([
+            'sync_run_id' => $syncRun->id,
+            'bank_account_id' => $account?->id,
+            'error_type' => $type,
+            'error_detail' => substr($e->getMessage(), 0, 1000),
+            'http_status' => $httpStatus,
+        ]);
+    }
+
+    /** @param  array{inserted:int,updated:int,deduped:int,errors:int}  $counters */
+    private function finaliseRun(SyncRun $syncRun, array $counters): void
+    {
+        $syncRun->finished_at = Carbon::now();
+        $syncRun->transactions_inserted = $counters['inserted'];
+        $syncRun->transactions_updated = $counters['updated'];
+        $syncRun->transactions_deduped = $counters['deduped'];
+        $syncRun->error_count = $counters['errors'];
+        $syncRun->save();
+    }
+}
