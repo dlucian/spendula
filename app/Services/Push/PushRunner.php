@@ -135,10 +135,23 @@ class PushRunner
 
         try {
             $response = $this->client->createTransactions($payloads);
-        } catch (YnabAuthException|YnabRateLimitException $e) {
-            // Auth and rate-limit failures are run-level, not row-level. Don't
-            // mutate per-row push_attempt_count here — runLocked() catches and
-            // aborts the entire run so other account groups aren't pushed.
+        } catch (YnabRateLimitException $e) {
+            // Rate-limit aborts the run, but we still stamp the attempted batch
+            // so the 10-minute retry gate engages — otherwise a cron tick or
+            // manual rerun would pick the same rows up immediately and keep
+            // hammering YNAB while it is throttling us.
+            foreach ($transactions as $transaction) {
+                $transaction->push_attempt_count++;
+                $transaction->last_push_attempt_at = $now;
+                $transaction->last_push_error = $this->redact($e);
+                $transaction->save();
+            }
+
+            throw $e;
+        } catch (YnabAuthException $e) {
+            // Auth failures cannot be fixed by waiting — the operator must
+            // refresh the token. Leave push_attempt_count/last_push_attempt_at
+            // alone so a corrected token retries this batch immediately.
             throw $e;
         } catch (YnabException $e) {
             // One YNAB call rejecting a batch fails every row in the batch.

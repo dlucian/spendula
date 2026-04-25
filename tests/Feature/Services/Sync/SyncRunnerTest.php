@@ -4,6 +4,7 @@ namespace Tests\Feature\Services\Sync;
 
 use App\Enums\BankConnectionStatus;
 use App\Enums\TransactionStatus;
+use App\Enums\YnabAccountType;
 use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\BankAccountSession;
@@ -215,6 +216,7 @@ class SyncRunnerTest extends TestCase
             'currency' => 'EUR',
             'is_base_currency' => true,
             'active' => true,
+            'ynab_account_type' => YnabAccountType::OnBudget,
             'first_linked_at' => Carbon::now(),
             'last_seen_at' => Carbon::now(),
         ]);
@@ -232,11 +234,16 @@ class SyncRunnerTest extends TestCase
     {
         $connection = BankConnection::query()->where('status', BankConnectionStatus::Active->value)->sole();
 
+        // The currency_mapping check requires non-base-currency accounts to be
+        // tracking or unmapped. The rate-limit/multi-account scenarios that use
+        // this helper want the second account to actually sync, so we mark it
+        // base-currency-true regardless of the currency string.
         $account = BankAccount::query()->create([
             'bank_slug' => 'mock',
             'currency' => $currency,
-            'is_base_currency' => strtoupper($currency) === 'EUR',
+            'is_base_currency' => true,
             'active' => true,
+            'ynab_account_type' => YnabAccountType::OnBudget,
             'first_linked_at' => Carbon::now(),
             'last_seen_at' => Carbon::now(),
         ]);

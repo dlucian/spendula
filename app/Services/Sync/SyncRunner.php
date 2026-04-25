@@ -156,8 +156,14 @@ class SyncRunner
                 continue;
             }
 
-            // Tracking accounts use snapshots (phase 3); phase 1 skips them.
-            if ($account->ynab_account_type === YnabAccountType::Tracking) {
+            // Sync only mapped on_budget accounts:
+            //   * ynab_account_type IS NULL — discovered via the callback but
+            //     not yet run through `spendula:accounts:seed-mock`/map. Importing
+            //     pre-mapping ingests history before import_cutoff_date can be
+            //     set, and any account later mapped as `tracking` is left with
+            //     fetched rows that review/push can't process.
+            //   * ynab_account_type === Tracking — uses balance snapshots (phase 3).
+            if ($account->ynab_account_type !== YnabAccountType::OnBudget) {
                 continue;
             }
 
@@ -170,9 +176,14 @@ class SyncRunner
                     $accountsFailed++;
                 }
             } catch (EnableBankingRevokedException $e) {
+                // 403 means the user revoked consent. Connection status flips
+                // to revoked so subsequent runs skip it; log the error with
+                // a non-expiry type so the audit trail (and any future
+                // status/reporting) reflects revocation rather than a natural
+                // valid_until expiry — those are different operator actions.
                 $connection->status = BankConnectionStatus::Revoked;
                 $connection->save();
-                $this->logError($syncRun, $account, SyncErrorType::ConsentExpired, $e);
+                $this->logError($syncRun, $account, SyncErrorType::HttpError, $e);
                 $counters['errors']++;
 
                 return; // all accounts on this connection are now moot
