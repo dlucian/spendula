@@ -243,6 +243,7 @@ class PushRunnerTest extends TestCase
             amountMilliunits: $tx->amount_milliunits,
             rawCounterparty: (string) $tx->counterparty_name,
             occurrence: $tx->occurrence,
+            entryReference: $tx->entry_reference,
         );
     }
 }

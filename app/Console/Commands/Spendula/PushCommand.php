@@ -5,6 +5,7 @@ namespace App\Console\Commands\Spendula;
 use App\Services\Locks\LockBusyException;
 use App\Services\Push\PushRunner;
 use App\Services\Ynab\Exceptions\YnabAuthException;
+use App\Services\Ynab\Exceptions\YnabRateLimitException;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
@@ -25,6 +26,11 @@ class PushCommand extends Command
         } catch (YnabAuthException $e) {
             $this->error('YNAB rejected the access token: '.$e->getMessage());
             $this->warn('Fix SPENDULA_YNAB_ACCESS_TOKEN in .env, then re-run.');
+
+            return self::FAILURE;
+        } catch (YnabRateLimitException $e) {
+            $this->error('YNAB returned 429 Too Many Requests: '.$e->getMessage());
+            $this->warn('SPEC §10.2 aborts the push run on rate-limit; re-run spendula:push after a short wait.');
 
             return self::FAILURE;
         }

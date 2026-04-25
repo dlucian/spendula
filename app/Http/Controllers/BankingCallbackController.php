@@ -40,6 +40,21 @@ class BankingCallbackController extends Controller
             ]);
 
             return $this->error('Enable Banking declined the session exchange: '.$e->getMessage(), status: 502);
+        } catch (\RuntimeException $e) {
+            // Malformed-but-200 session payloads (e.g. missing session_id). The
+            // auth_request was already consumed before exchangeCode, so the user
+            // must restart the flow — show the callback error page instead of
+            // a raw 500 stack trace.
+            Log::warning('Enable Banking session payload was malformed', [
+                'event' => 'callback.malformed_session',
+                'reason' => $e->getMessage(),
+            ]);
+
+            return $this->error(
+                'Enable Banking returned an unexpected response shape. Start a new auth flow with '
+                .'`php artisan spendula:auth:start <bank_slug>`.',
+                status: 502,
+            );
         }
 
         return response()->view('banking.callback-success', [

@@ -33,6 +33,7 @@ class CallbackHandler
      *
      * @throws InvalidCallbackStateException
      * @throws EnableBankingException
+     * @throws RuntimeException for malformed-but-200 EB session payloads (e.g. missing session_id).
      */
     public function handle(string $state, string $code): array
     {

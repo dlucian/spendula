@@ -42,6 +42,7 @@ class PayloadBuilder
                 amountMilliunits: $transaction->amount_milliunits,
                 rawCounterparty: $rawCounterparty,
                 occurrence: $transaction->occurrence,
+                entryReference: $transaction->entry_reference,
             );
         }
 

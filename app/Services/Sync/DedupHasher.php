@@ -48,8 +48,14 @@ class DedupHasher
 
     /**
      * SPEC §7.3 import_id = "SPNDL:" + substr(sha1(…), 0, 30) — exactly 36 chars.
-     * occurrence is what separates legitimate same-day duplicates: two identical
-     * coffees get occurrence=1 and occurrence=2 and thus different import_ids.
+     * occurrence separates same-fundamentals legitimate duplicates that lack an
+     * entry_reference (two identical coffees → occurrence=1 and occurrence=2).
+     * entry_reference is folded in for the dual case: two rows with identical
+     * fundamentals but distinct bank-side references both get inserted at
+     * occurrence=1 (since entry-ref'd rows are excluded from the fundamentals
+     * occurrence ladder), so without entry_reference in the hash they would
+     * collide on a single YNAB import_id and one would be silently overwritten
+     * in PushRunner's by-import-id grouping.
      */
     public static function importId(
         string $bankAccountId,
@@ -57,6 +63,7 @@ class DedupHasher
         int $amountMilliunits,
         ?string $rawCounterparty,
         int $occurrence,
+        ?string $entryReference = null,
     ): string {
         $input = implode('|', [
             $bankAccountId,
@@ -64,6 +71,7 @@ class DedupHasher
             (string) $amountMilliunits,
             Resolver::normalize($rawCounterparty),
             (string) $occurrence,
+            $entryReference ?? '',
         ]);
 
         return 'SPNDL:'.substr(sha1($input), 0, 30);
