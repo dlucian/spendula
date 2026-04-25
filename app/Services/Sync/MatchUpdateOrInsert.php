@@ -196,6 +196,20 @@ class MatchUpdateOrInsert
     {
         $changed = false;
 
+        // Backfill entry_reference on fundamental-match updates: if the row was
+        // first synced without one and EB is now returning one, persist it. Without
+        // this, a later same-fundamentals transaction with a different
+        // entry_reference would still miss step 1 and get merged into this row by
+        // the fundamentals fallback, instead of being inserted with occurrence=2.
+        if (
+            ($existing->entry_reference === null || $existing->entry_reference === '')
+            && $parsed->entryReference !== null
+            && $parsed->entryReference !== ''
+        ) {
+            $existing->entry_reference = $parsed->entryReference;
+            $changed = true;
+        }
+
         if ($existing->counterparty_name !== $parsed->counterpartyName) {
             $existing->counterparty_name = $parsed->counterpartyName;
             $changed = true;

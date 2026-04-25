@@ -61,7 +61,7 @@ class Resolver
             if (is_string($first) && trim($first) !== '') {
                 $stripped = $this->stripPrefixes($first);
                 if ($stripped !== '') {
-                    return new ResolvedCounterparty(substr($stripped, 0, 64), 2);
+                    return new ResolvedCounterparty(mb_substr($stripped, 0, 64), 2);
                 }
             }
         }
@@ -70,7 +70,7 @@ class Resolver
         if (isset($transaction['additional_information']) && is_string($transaction['additional_information'])) {
             $trimmed = trim($transaction['additional_information']);
             if ($trimmed !== '') {
-                return new ResolvedCounterparty(substr($trimmed, 0, 64), 3);
+                return new ResolvedCounterparty(mb_substr($trimmed, 0, 64), 3);
             }
         }
 

@@ -37,8 +37,8 @@ class PayloadBuilder
         );
 
         $payeeName = $transaction->counterparty_name;
-        if (is_string($payeeName) && strlen($payeeName) > self::PAYEE_MAX) {
-            $payeeName = substr($payeeName, 0, self::PAYEE_MAX);
+        if (is_string($payeeName) && mb_strlen($payeeName) > self::PAYEE_MAX) {
+            $payeeName = mb_substr($payeeName, 0, self::PAYEE_MAX);
         }
 
         return [

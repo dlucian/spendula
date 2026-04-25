@@ -60,13 +60,17 @@ class AccountsSeedMockCommand extends Command
         if ($importCutoffDateInput === null) {
             $importCutoffDate = Carbon::today();
         } else {
+            $cutoffInput = (string) $importCutoffDateInput;
             try {
-                $importCutoffDate = Carbon::createFromFormat('!Y-m-d', (string) $importCutoffDateInput);
+                $importCutoffDate = Carbon::createFromFormat('!Y-m-d', $cutoffInput);
             } catch (\Throwable) {
                 $importCutoffDate = null;
             }
 
-            if (! $importCutoffDate instanceof Carbon) {
+            // Carbon::createFromFormat silently overflows calendar-invalid dates
+            // (e.g. 2026-02-30 → 2026-03-02). Reject any input whose round-trip
+            // doesn't match the literal YYYY-MM-DD the operator typed.
+            if (! $importCutoffDate instanceof Carbon || $importCutoffDate->format('Y-m-d') !== $cutoffInput) {
                 $this->error("Invalid --import-cutoff-date '{$importCutoffDateInput}'. Expected YYYY-MM-DD.");
 
                 return self::FAILURE;

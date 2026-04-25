@@ -177,7 +177,9 @@ class PushRunner
             ]);
         }
 
-        // Transactions not reflected in either list — bump attempt counter, leave as-is.
+        // Transactions not reflected in either list — YNAB returned 201 but
+        // silently dropped the row. Treat as a per-row push error so the run
+        // surfaces error_count > 0 and operators see it in push_run_errors.
         foreach ($byImportId as $importId => $transaction) {
             if (isset($resolved[$importId])) {
                 continue;
@@ -186,6 +188,15 @@ class PushRunner
             $transaction->last_push_attempt_at = $now;
             $transaction->last_push_error = 'YNAB response omitted this import_id.';
             $transaction->save();
+
+            $counters['errors']++;
+            PushRunError::query()->create([
+                'push_run_id' => $pushRun->id,
+                'transaction_id' => $transaction->id,
+                'error_type' => PushErrorType::Other,
+                'error_detail' => 'YNAB returned 201 but omitted this import_id from both transactions and duplicate_import_ids.',
+                'http_status' => 201,
+            ]);
         }
     }
 
