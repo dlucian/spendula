@@ -61,9 +61,18 @@ class MatchUpdateOrInsert
                 ->get();
 
             $incomingNormalized = Resolver::normalize($parsed->rawCounterparty);
-            $fundamentalMatches = $candidates->filter(
-                fn (Transaction $t): bool => Resolver::normalize($this->extractRawCounterpartyFromStored($t)) === $incomingNormalized,
-            );
+            $fundamentalMatches = $candidates->filter(function (Transaction $t) use ($incomingNormalized): bool {
+                // A candidate that already carries a non-empty entry_reference is
+                // a different transaction by identity — step 1 would have hit it
+                // if we were the same row. Excluding those candidates here prevents
+                // a later legitimate transaction (same fundamentals, different
+                // entry_reference) from being merged into the previously-tagged row.
+                if (is_string($t->entry_reference) && $t->entry_reference !== '') {
+                    return false;
+                }
+
+                return Resolver::normalize($this->extractRawCounterpartyFromStored($t)) === $incomingNormalized;
+            });
 
             if ($fundamentalMatches->count() === 1) {
                 $match = $fundamentalMatches->first();

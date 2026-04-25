@@ -47,12 +47,18 @@ class CallbackHandler
             );
         }
 
-        // Mark the row consumed BEFORE spending the one-time code with EB. The
-        // conditional update also serves as a race guard: a concurrent callback
-        // for the same state can't both pass the whereNull check. If any later
-        // step (code exchange, session shape validation, account upsert) fails,
-        // the row already reflects that the code was attempted, so the operator
-        // doesn't see a stale "open" auth_request that can never succeed.
+        // Local preflight: sign and discard a JWT so a missing app id or unreadable
+        // private key surfaces here (still recoverable: fix config and retry the
+        // same callback) instead of after we've already marked the row consumed
+        // and the EB code is irrecoverable.
+        $this->client->preflight();
+
+        // Now mark the row consumed BEFORE the actual exchange. The conditional
+        // update is a race guard: concurrent callbacks for the same state can't
+        // both pass the whereNull check. If exchangeCode or any later step fails
+        // after this point, the row reflects that the one-time code was spent on
+        // the wire, so the operator restarts spendula:auth:start rather than
+        // re-hitting the same callback URL with stale state.
         $rowsAffected = AuthRequest::query()
             ->whereKey($authRequest->id)
             ->whereNull('consumed_at')
@@ -122,6 +128,14 @@ class CallbackHandler
     /** @param  array<string, mixed>  $account */
     private function upsertAccount(string $bankSlug, BankConnection $connection, array $account): BankAccount
     {
+        $uid = isset($account['uid']) && is_string($account['uid']) ? $account['uid'] : '';
+        if ($uid === '') {
+            // Without a uid every later /accounts/{uid}/transactions call would
+            // hit /accounts//transactions and silently break sync. Reject early,
+            // same as we already do for missing identification_hash.
+            throw new RuntimeException('Enable Banking account has no uid — cannot proceed (SPEC §10.1).');
+        }
+
         $primaryHash = (string) ($account['identification_hash'] ?? '');
         /** @var array<int, string> $allHashes */
         $allHashes = is_array($account['identification_hashes'] ?? null)
@@ -179,7 +193,7 @@ class CallbackHandler
                 'bank_account_id' => $bankAccount->id,
             ],
             [
-                'enable_banking_uid' => (string) ($account['uid'] ?? ''),
+                'enable_banking_uid' => $uid,
             ]
         );
 

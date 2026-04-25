@@ -255,7 +255,20 @@ class SyncRunner
                     continue;
                 }
 
-                $result = $this->matchUpdateOrInsert->apply($account, $ebTransaction);
+                try {
+                    $result = $this->matchUpdateOrInsert->apply($account, $ebTransaction);
+                } catch (\InvalidArgumentException $e) {
+                    // A single malformed BOOK item (missing transaction_amount,
+                    // booking_date, unknown CDI, etc.) must not abort the whole
+                    // page — that would prevent last_continuation_key from being
+                    // persisted and the bad row would replay on every later sync,
+                    // permanently starving every other transaction on this account.
+                    $this->logError($syncRun, $account, SyncErrorType::ParseError, $e);
+                    $counters['errors']++;
+
+                    continue;
+                }
+
                 match ($result->outcome) {
                     ApplyOutcome::Inserted => $counters['inserted']++,
                     ApplyOutcome::Updated => $counters['updated']++,

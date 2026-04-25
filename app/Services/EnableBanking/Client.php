@@ -32,6 +32,16 @@ class Client
     ) {}
 
     /**
+     * Sign a token and discard it. Lets callers surface JWT/config failures
+     * (missing app id, unreadable private key) before they perform irreversible
+     * local work — e.g. CallbackHandler marking the auth_request consumed.
+     */
+    public function preflight(): void
+    {
+        $this->jwt->sign();
+    }
+
+    /**
      * @return array<string, mixed>
      *
      * @throws Exceptions\EnableBankingException
