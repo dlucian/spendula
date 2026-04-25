@@ -13,6 +13,7 @@ use App\Services\Locks\AdvisoryLock;
 use App\Services\Ynab\Client;
 use App\Services\Ynab\Exceptions\YnabAuthException;
 use App\Services\Ynab\Exceptions\YnabException;
+use App\Services\Ynab\Exceptions\YnabRateLimitException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -87,6 +88,14 @@ class PushRunner
                 $counters['errors']++;
                 $this->finaliseRun($pushRun, $counters);
                 throw $e;
+            } catch (YnabRateLimitException $e) {
+                // SPEC §10.2: a 429 aborts the entire push run, so further account
+                // groups don't keep hammering YNAB and inflating push_attempt_count
+                // on rows whose actual problem is just "we're being throttled".
+                $this->logError($pushRun, null, PushErrorType::RateLimit, $e);
+                $counters['errors']++;
+                $this->finaliseRun($pushRun, $counters);
+                throw $e;
             }
         }
 
@@ -126,7 +135,10 @@ class PushRunner
 
         try {
             $response = $this->client->createTransactions($payloads);
-        } catch (YnabAuthException $e) {
+        } catch (YnabAuthException|YnabRateLimitException $e) {
+            // Auth and rate-limit failures are run-level, not row-level. Don't
+            // mutate per-row push_attempt_count here — runLocked() catches and
+            // aborts the entire run so other account groups aren't pushed.
             throw $e;
         } catch (YnabException $e) {
             $counters['errors']++;

@@ -203,6 +203,34 @@ class MatchUpdateOrInsert
 
     private function update(Transaction $existing, ParsedIncomingTransaction $parsed): ApplyResult
     {
+        // SPEC §6.4 marks amount/currency/cdi/booking_date as immutable after insert.
+        // If a later sync of the same matched row (most often via entry_reference)
+        // presents different fundamentals, that's bank-side drift we must not silently
+        // paper over by overwriting raw_payload — throw so SyncRunner records a
+        // parse_error row and the operator can investigate before bad state reaches
+        // YNAB.
+        if (
+            $existing->amount_milliunits !== $parsed->amountMilliunits
+            || strtoupper($existing->currency) !== strtoupper($parsed->currency)
+            || $existing->credit_debit_indicator !== $parsed->creditDebitIndicator
+            || $existing->booking_date->toDateString() !== $parsed->bookingDate
+        ) {
+            throw new InvalidArgumentException(sprintf(
+                'Drift detected on transaction %s — immutable fields changed since insert. '
+                .'Stored: amount=%d currency=%s cdi=%s booking_date=%s. '
+                .'Incoming: amount=%d currency=%s cdi=%s booking_date=%s.',
+                $existing->id,
+                $existing->amount_milliunits,
+                $existing->currency,
+                $existing->credit_debit_indicator->value,
+                $existing->booking_date->toDateString(),
+                $parsed->amountMilliunits,
+                $parsed->currency,
+                $parsed->creditDebitIndicator->value,
+                $parsed->bookingDate,
+            ));
+        }
+
         $changed = false;
 
         // Backfill entry_reference on fundamental-match updates: if the row was

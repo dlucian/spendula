@@ -101,6 +101,25 @@ class SyncRunner
             return;
         }
 
+        // Local consent-expiry check before any HTTP. Without this, the first
+        // post-expiry sync still hits EB and a 403 there gets classified as
+        // Revoked, which is wrong: the consent expired naturally, the user
+        // didn't revoke it. SPEC §10.1 wants this transitioned to expired and
+        // recorded as a consent_expired error.
+        if ($connection->valid_until->isPast()) {
+            $connection->status = BankConnectionStatus::Expired;
+            $connection->save();
+            $this->logError(
+                $syncRun,
+                null,
+                SyncErrorType::ConsentExpired,
+                new \RuntimeException("Bank connection valid_until ({$connection->valid_until->toIso8601String()}) has already passed."),
+            );
+            $counters['errors']++;
+
+            return;
+        }
+
         /** @var Collection<int, BankAccountSession> $sessions */
         $sessions = BankAccountSession::query()
             ->where('bank_connection_id', $connection->id)
