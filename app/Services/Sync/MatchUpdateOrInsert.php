@@ -64,48 +64,32 @@ class MatchUpdateOrInsert
             $incomingNormalized = Resolver::normalize($parsed->rawCounterparty);
             $incomingHasRef = $parsed->entryReference !== null && $parsed->entryReference !== '';
 
-            // Split candidates into tagged (have entry_reference) and untagged.
-            // Tagged candidates can only match an incoming row that itself has
-            // a ref (handled in step 1) or — when incoming has no ref — via
-            // the round-5 fallback below; in step 2 proper we work the
-            // untagged pool.
-            $untaggedCandidates = $candidates->filter(
+            // SPEC §6.3 includes normalized_counterparty in the fundamentals
+            // tuple, so a counterparty mismatch means a different transaction
+            // (silently merging would drop a real row). Bank-side enrichment
+            // of creditor/debtor between overlap syncs is a known cause of
+            // duplicate inserts; we accept that risk rather than risk
+            // overwriting a distinct same-fundamentals row.
+            $counterpartyMatches = $candidates->filter(
+                fn (Transaction $t): bool => Resolver::normalize($this->extractRawCounterpartyFromStored($t)) === $incomingNormalized,
+            );
+
+            // Untagged candidates first — these are the "default" pool that the
+            // pre-overlap matching ladder always considered. If the incoming row
+            // has its own entry_reference, tagged candidates are by definition
+            // different transactions (step 1 would have caught them otherwise),
+            // so we only ever match against the untagged pool here.
+            $untaggedMatches = $counterpartyMatches->filter(
                 fn (Transaction $t): bool => ! is_string($t->entry_reference) || $t->entry_reference === '',
             );
 
-            if ($untaggedCandidates->count() === 1) {
-                // Single untagged candidate with matching fundamentals — treat
-                // as the same row even if extractRawCounterpartyFromStored() no
-                // longer matches. raw_payload is overwritten on update(), so a
-                // bank-side enrichment of creditor/debtor between syncs would
-                // otherwise force a duplicate insert. Log when the counterparty
-                // signature drifts so the operator can verify it really was
-                // enrichment, not a coincidental same-fundamentals collision.
-                /** @var Transaction $only */
-                $only = $untaggedCandidates->first();
-                if (Resolver::normalize($this->extractRawCounterpartyFromStored($only)) !== $incomingNormalized) {
-                    Log::info('Counterparty signature drifted between syncs; matching on fundamentals.', [
-                        'event' => 'sync.counterparty_drift',
-                        'transaction_id' => $only->id,
-                    ]);
-                }
-                $match = $only;
-            } elseif ($untaggedCandidates->count() > 1) {
-                // Multiple legitimate same-fundamentals duplicates exist — we
-                // need counterparty to disambiguate. If exactly one matches,
-                // update it; otherwise insert as a new occurrence.
-                $counterpartyMatches = $untaggedCandidates->filter(
-                    fn (Transaction $t): bool => Resolver::normalize($this->extractRawCounterpartyFromStored($t)) === $incomingNormalized,
-                );
+            if ($untaggedMatches->count() === 1) {
+                $match = $untaggedMatches->first();
+            } elseif ($untaggedMatches->count() > 1) {
+                /** @var int $maxOccurrence */
+                $maxOccurrence = (int) $untaggedMatches->max('occurrence');
 
-                if ($counterpartyMatches->count() === 1) {
-                    $match = $counterpartyMatches->first();
-                } else {
-                    /** @var int $maxOccurrence */
-                    $maxOccurrence = (int) $untaggedCandidates->max('occurrence');
-
-                    return $this->insert($parsed, occurrence: $maxOccurrence + 1);
-                }
+                return $this->insert($parsed, occurrence: $maxOccurrence + 1);
             } elseif (! $incomingHasRef) {
                 // No untagged candidate, but incoming has no ref either. Fall
                 // back to tagged candidates (the absent→present-then-absent
@@ -114,8 +98,8 @@ class MatchUpdateOrInsert
                 // matches are ambiguous — we cannot tell which the untagged
                 // incoming corresponds to, so dedupe rather than insert a
                 // duplicate occurrence.
-                $taggedMatches = $candidates->filter(
-                    fn (Transaction $t): bool => is_string($t->entry_reference) && $t->entry_reference !== '' && Resolver::normalize($this->extractRawCounterpartyFromStored($t)) === $incomingNormalized,
+                $taggedMatches = $counterpartyMatches->filter(
+                    fn (Transaction $t): bool => is_string($t->entry_reference) && $t->entry_reference !== '',
                 );
 
                 if ($taggedMatches->count() === 1) {

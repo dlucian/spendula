@@ -69,6 +69,12 @@ class PushRunner
                 ->select('id'))
             ->orderBy('bank_account_id')
             ->orderBy('booking_date')
+            // Stable tiebreaker: chunk() paginates with offsets and a
+            // non-unique ORDER BY lets PostgreSQL reshuffle ties between
+            // chunks, which can skip rows or read the same row twice across
+            // a 100-row boundary. id is the primary key — adding it makes
+            // the order deterministic.
+            ->orderBy('id')
             ->chunk(100, function ($rows) use (&$grouped): void {
                 foreach ($rows as $row) {
                     $grouped[$row->bank_account_id][] = $row;
