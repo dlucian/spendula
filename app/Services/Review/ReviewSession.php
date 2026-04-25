@@ -174,10 +174,24 @@ class ReviewSession
 
     private static function stdinIsTty(): bool
     {
+        // PHPUnit/Pest runners (especially watchers like phpunit-watcher) can
+        // leave STDIN attached to a TTY and feed buffered keypresses into the
+        // test process. Without this guard the review loop swallows whatever
+        // bytes are in stdin and silently mutates seeded fixtures. App-level
+        // testing flag is the most reliable signal — fall through to the
+        // stream/posix check only outside the test environment.
+        if (app()->runningUnitTests()) {
+            return false;
+        }
+
+        if (! defined('STDIN')) {
+            return false;
+        }
+
         // stream_isatty is built into PHP 7.2+ (no extension required); the
         // production php:8.4-fpm-alpine image does not install ext-posix, so
         // posix_isatty would always return false and silently disable the
         // approval loop inside `docker compose exec -it`.
-        return defined('STDIN') && stream_isatty(STDIN);
+        return stream_isatty(STDIN);
     }
 }
