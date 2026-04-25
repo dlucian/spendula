@@ -103,6 +103,31 @@ class CallbackHandler
             throw new RuntimeException('Enable Banking session response missing session_id.');
         }
 
+        // Cross-check the session's ASPSP against the auth_request's bank. If
+        // an operator opens consent flows for two banks concurrently, the
+        // browser callback could mix bank A's `state` with bank B's `code`;
+        // without this guard we'd supersede A's active connection and persist
+        // B's accounts under A. EB's POST /sessions reply includes aspsp.name
+        // — a mismatch is a SPEC §9.2 state-binding failure, treat it as an
+        // invalid callback state rather than a generic malformed payload.
+        $sessionAspspName = isset($session['aspsp']['name']) && is_string($session['aspsp']['name'])
+            ? $session['aspsp']['name']
+            : null;
+        $bank = Bank::query()->whereKey($authRequest->bank_slug)->first();
+        if ($bank instanceof Bank && $sessionAspspName !== null && $sessionAspspName !== $bank->aspsp_name) {
+            Log::error('Enable Banking session ASPSP does not match auth_request bank.', [
+                'event' => 'callback.aspsp_mismatch',
+                'auth_request_id' => $authRequest->id,
+                'auth_bank_slug' => $authRequest->bank_slug,
+                'expected_aspsp_name' => $bank->aspsp_name,
+                'session_aspsp_name' => $sessionAspspName,
+            ]);
+
+            throw new InvalidCallbackStateException(
+                "Callback session ASPSP ({$sessionAspspName}) does not match auth_request bank ({$bank->aspsp_name})."
+            );
+        }
+
         if (! isset($session['accounts']) || ! is_array($session['accounts']) || $session['accounts'] === []) {
             // A "successful" 200 with no accounts list — or with an explicit
             // empty array, which the EB sandbox can return when consent is

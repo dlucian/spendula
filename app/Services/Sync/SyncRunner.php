@@ -336,10 +336,15 @@ class SyncRunner
 
                     return false;
                 }
-                $status = isset($ebTransaction['transaction_status']) && is_string($ebTransaction['transaction_status'])
+                // Treat missing/empty transaction_status as BOOK to mirror
+                // MatchUpdateOrInsert::parseIncoming's default. Some banks omit
+                // the field for booked rows; rejecting them here would silently
+                // skip every sync. Only an explicit non-BOOK value (e.g. INFO,
+                // OTHR) should be filtered.
+                $statusRaw = isset($ebTransaction['transaction_status']) && is_string($ebTransaction['transaction_status'])
                     ? $ebTransaction['transaction_status']
                     : '';
-                if ($status !== 'BOOK') {
+                if ($statusRaw !== '' && $statusRaw !== 'BOOK') {
                     continue;
                 }
 
