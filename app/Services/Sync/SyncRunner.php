@@ -140,8 +140,14 @@ class SyncRunner
             }
 
             try {
-                $this->syncAccount($connection, $bank, $session, $account, $syncRun, $counters);
-                $anyAccountSynced = true;
+                // Only count toward anyAccountSynced when syncAccount returned a
+                // clean finish — its non-throwing failure paths (malformed-200,
+                // stalled continuation_key, 50-page cap) record sync_run_errors
+                // and return false; advancing last_synced_at on a connection that
+                // only partially failed would mask that error in spendula:status.
+                if ($this->syncAccount($connection, $bank, $session, $account, $syncRun, $counters)) {
+                    $anyAccountSynced = true;
+                }
             } catch (EnableBankingRevokedException $e) {
                 $connection->status = BankConnectionStatus::Revoked;
                 $connection->save();
@@ -196,7 +202,7 @@ class SyncRunner
         BankAccount $account,
         SyncRun $syncRun,
         array &$counters,
-    ): void {
+    ): bool {
         $syncState = $account->syncState instanceof BankAccountSyncState
             ? $account->syncState
             : BankAccountSyncState::query()->firstOrCreate(
@@ -218,7 +224,7 @@ class SyncRunner
                 );
                 $counters['errors']++;
 
-                return;
+                return false;
             }
 
             try {
@@ -257,7 +263,7 @@ class SyncRunner
                 $syncState->consecutive_failure_count++;
                 $syncState->save();
 
-                return;
+                return false;
             }
 
             $transactions = $response['transactions'];
@@ -320,7 +326,7 @@ class SyncRunner
                 );
                 $counters['errors']++;
 
-                return;
+                return false;
             }
 
             $syncState->last_continuation_key = $nextContinuationKey;
@@ -334,6 +340,8 @@ class SyncRunner
         $syncState->last_successful_sync_at = Carbon::now();
         $syncState->consecutive_failure_count = 0;
         $syncState->save();
+
+        return true;
     }
 
     /** SPEC §6.2 fetch window. */

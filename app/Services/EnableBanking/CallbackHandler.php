@@ -4,6 +4,7 @@ namespace App\Services\EnableBanking;
 
 use App\Enums\BankConnectionStatus;
 use App\Models\AuthRequest;
+use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\BankAccountIdentifier;
 use App\Models\BankAccountSession;
@@ -88,6 +89,18 @@ class CallbackHandler
         // raw EB envelope around for forensic recovery rather than rolling it
         // back together with the partial accounts.
         $connection = DB::transaction(function () use ($authRequest, $session, $validUntil): BankConnection {
+            // Lock the parent bank row to serialize concurrent callbacks for the
+            // same bank_slug. Without this, two near-simultaneous reauths can
+            // both flip the existing active row to superseded and then race to
+            // insert their new active rows — the partial unique index on
+            // status='active' will reject the loser as a 500. Holding this lock
+            // for the duration of the transaction makes the supersede+insert
+            // sequence atomic per bank.
+            Bank::query()
+                ->whereKey($authRequest->bank_slug)
+                ->lockForUpdate()
+                ->first();
+
             // Step 1: flip the prior active connection to superseded so the partial
             // unique index ("one active per bank_slug") releases. superseded_by_id
             // is backfilled once the new row exists.
