@@ -27,8 +27,10 @@
         <env name="DB_HOST" value="127.0.0.1"/>
         <env name="DB_PORT" value="5432"/>
         <env name="DB_DATABASE" value="spendula_test"/>
-        <env name="DB_USERNAME" value="spendula" force="false"/>
-        <env name="DB_PASSWORD" value="spendula" force="false"/>
+        <!-- DB_USERNAME / DB_PASSWORD intentionally not set here so .env (or
+             shell env) is the single source of truth for the local Postgres
+             role. A fresh checkout sets them in .env (see .env.example). -->
+
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
