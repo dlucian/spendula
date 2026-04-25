@@ -81,7 +81,19 @@ class CallbackHandler
             throw new RuntimeException('Enable Banking session response missing session_id.');
         }
 
-        $validUntil = Carbon::parse((string) ($session['access']['valid_until'] ?? Carbon::now()->addDays(90)->toIso8601String()));
+        // Tolerant valid_until parse: a malformed string would otherwise throw
+        // before the raw_session_response insert below, losing the one-shot EB
+        // envelope. Fall back to a 90-day default and log so the operator can
+        // still inspect the raw payload after the fact.
+        try {
+            $validUntil = Carbon::parse((string) ($session['access']['valid_until'] ?? Carbon::now()->addDays(90)->toIso8601String()));
+        } catch (\Exception $e) {
+            Log::warning('Enable Banking returned an unparsable valid_until; defaulting to +90 days.', [
+                'event' => 'callback.valid_until_parse_error',
+                'reason' => $e->getMessage(),
+            ]);
+            $validUntil = Carbon::now()->addDays(90);
+        }
 
         // Persist the connection (including raw_session_response) in its own
         // transaction first. POST /sessions is one-shot and the auth request is
@@ -179,8 +191,13 @@ class CallbackHandler
             ? array_values(array_filter($account['identification_hashes'], 'is_string'))
             : [];
 
-        if ($primaryHash === '' && $allHashes === []) {
-            throw new RuntimeException('Enable Banking account has no identification_hash — cannot proceed (SPEC §10.1).');
+        // SPEC §10.1: identification_hash is the stable identity key; if the
+        // payload is missing the *primary* hash, syncIdentifiers would write
+        // every secondary with is_primary=false, leaving accounts with no
+        // primary identifier (and stripping any prior primary on reauth).
+        // Skip these accounts entirely instead of corrupting identifier state.
+        if ($primaryHash === '') {
+            throw new RuntimeException('Enable Banking account has no primary identification_hash — cannot proceed (SPEC §10.1).');
         }
 
         $lookupHashes = array_values(array_unique(array_filter(array_merge([$primaryHash], $allHashes))));
@@ -234,9 +251,13 @@ class CallbackHandler
             ]
         );
 
-        BankAccountSyncState::query()->firstOrCreate(
+        // last_continuation_key is session-scoped (it's a cursor issued for the
+        // EB session UID we just superseded). Carrying it across reauth would
+        // make the first sync resume against a session that no longer exists,
+        // so explicitly clear it here on every link, fresh or relink.
+        BankAccountSyncState::query()->updateOrCreate(
             ['bank_account_id' => $bankAccount->id],
-            ['consecutive_failure_count' => 0],
+            ['last_continuation_key' => null],
         );
 
         return $bankAccount;

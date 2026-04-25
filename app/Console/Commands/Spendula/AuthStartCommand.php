@@ -55,6 +55,15 @@ class AuthStartCommand extends Command
             $this->error('Enable Banking rejected the auth request: '.$e->getMessage());
 
             return self::FAILURE;
+        } catch (\RuntimeException $e) {
+            // Local config failure inside Jwt::sign() — missing app id, unreadable
+            // private key, or empty key file. Surfaces here because the JWT is
+            // resolved lazily and signs on first call. Show a friendly message
+            // instead of an uncaught stack trace on the operator's first run.
+            $this->error('Local Enable Banking configuration error: '.$e->getMessage());
+            $this->warn('Check SPENDULA_ENABLE_BANKING_APP_ID and SPENDULA_ENABLE_BANKING_PRIVATE_KEY_PATH in .env.');
+
+            return self::FAILURE;
         }
 
         $url = (string) ($response['url'] ?? '');

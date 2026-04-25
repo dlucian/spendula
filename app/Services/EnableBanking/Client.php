@@ -45,6 +45,7 @@ class Client
      * @return array<string, mixed>
      *
      * @throws Exceptions\EnableBankingException
+     * @throws RuntimeException for local JWT/config failures (missing app id or unreadable private key).
      */
     public function application(): array
     {
@@ -55,6 +56,7 @@ class Client
      * @return array<string, mixed>
      *
      * @throws Exceptions\EnableBankingException
+     * @throws RuntimeException for local JWT/config failures (missing app id or unreadable private key).
      */
     public function aspsps(): array
     {
@@ -66,6 +68,7 @@ class Client
      * @return array<string, mixed>
      *
      * @throws Exceptions\EnableBankingException
+     * @throws RuntimeException for local JWT/config failures (missing app id or unreadable private key).
      */
     public function startAuth(array $body): array
     {
@@ -76,6 +79,7 @@ class Client
      * @return array<string, mixed>
      *
      * @throws Exceptions\EnableBankingException
+     * @throws RuntimeException for local JWT/config failures (missing app id or unreadable private key).
      */
     public function exchangeCode(string $code): array
     {
@@ -86,6 +90,7 @@ class Client
      * @return array<string, mixed>
      *
      * @throws Exceptions\EnableBankingException
+     * @throws RuntimeException for local JWT/config failures (missing app id or unreadable private key).
      */
     public function accountTransactions(
         string $uid,
