@@ -210,12 +210,17 @@ class MatchUpdateOrInsert
         // this, a later same-fundamentals transaction with a different
         // entry_reference would still miss step 1 and get merged into this row by
         // the fundamentals fallback, instead of being inserted with occurrence=2.
+        // dedup_hash also has to be recomputed: it folds entry_reference into the
+        // hash, so leaving it stale lets a later distinct same-fundamentals row
+        // (no entry_reference) compute the same hash and collide with the existing
+        // (bank_account_id, dedup_hash, occurrence=1) unique constraint.
         if (
             ($existing->entry_reference === null || $existing->entry_reference === '')
             && $parsed->entryReference !== null
             && $parsed->entryReference !== ''
         ) {
             $existing->entry_reference = $parsed->entryReference;
+            $existing->dedup_hash = $parsed->dedupHash;
             $changed = true;
         }
 

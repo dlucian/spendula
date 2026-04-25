@@ -13,6 +13,7 @@ use App\Services\EnableBanking\Exceptions\EnableBankingException;
 use App\Services\EnableBanking\Exceptions\InvalidCallbackStateException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
@@ -78,9 +79,14 @@ class CallbackHandler
             throw new RuntimeException('Enable Banking session response missing session_id.');
         }
 
-        return DB::transaction(function () use ($authRequest, $session) {
-            $validUntil = Carbon::parse((string) ($session['access']['valid_until'] ?? Carbon::now()->addDays(90)->toIso8601String()));
+        $validUntil = Carbon::parse((string) ($session['access']['valid_until'] ?? Carbon::now()->addDays(90)->toIso8601String()));
 
+        // Persist the connection (including raw_session_response) in its own
+        // transaction first. POST /sessions is one-shot and the auth request is
+        // already consumed, so if account upsert fails later, we MUST keep the
+        // raw EB envelope around for forensic recovery rather than rolling it
+        // back together with the partial accounts.
+        $connection = DB::transaction(function () use ($authRequest, $session, $validUntil): BankConnection {
             // Step 1: flip the prior active connection to superseded so the partial
             // unique index ("one active per bank_slug") releases. superseded_by_id
             // is backfilled once the new row exists.
@@ -110,19 +116,36 @@ class CallbackHandler
                 $prior->save();
             }
 
-            /** @var array<int, array<string, mixed>> $accounts */
-            $accounts = is_array($session['accounts'] ?? null) ? $session['accounts'] : [];
-
-            $discovered = [];
-            foreach ($accounts as $account) {
-                $discovered[] = $this->upsertAccount($authRequest->bank_slug, $connection, $account);
-            }
-
-            return [
-                'connection' => $connection->refresh(),
-                'accounts' => $discovered,
-            ];
+            return $connection;
         });
+
+        /** @var array<int, array<string, mixed>> $accounts */
+        $accounts = is_array($session['accounts'] ?? null) ? $session['accounts'] : [];
+
+        $discovered = [];
+        foreach ($accounts as $account) {
+            try {
+                $discovered[] = DB::transaction(
+                    fn (): BankAccount => $this->upsertAccount($authRequest->bank_slug, $connection, $account),
+                );
+            } catch (RuntimeException $e) {
+                // Account-local failure (missing uid, missing identification_hash,
+                // identifier collision). Skip this account but keep the rest of
+                // the session — turning one malformed entry into a total
+                // reauthorization failure would be needlessly destructive.
+                Log::warning('Skipping malformed Enable Banking account in callback.', [
+                    'event' => 'callback.account_skipped',
+                    'bank_slug' => $authRequest->bank_slug,
+                    'connection_id' => $connection->id,
+                    'reason' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return [
+            'connection' => $connection->refresh(),
+            'accounts' => $discovered,
+        ];
     }
 
     /** @param  array<string, mixed>  $account */
