@@ -143,7 +143,12 @@ class SyncRunner
             ->with(['bankAccount.syncState'])
             ->get();
 
-        $anyAccountSynced = false;
+        // last_synced_at represents "this whole connection synced cleanly". Any
+        // per-account failure (throw OR non-throwing false from syncAccount)
+        // disqualifies the connection — otherwise spendula:status would show a
+        // recently-synced connection with hidden sync_run_errors.
+        $accountsAttempted = 0;
+        $accountsFailed = 0;
 
         foreach ($sessions as $session) {
             $account = $session->bankAccount;
@@ -156,14 +161,13 @@ class SyncRunner
                 continue;
             }
 
+            $accountsAttempted++;
+
             try {
-                // Only count toward anyAccountSynced when syncAccount returned a
-                // clean finish — its non-throwing failure paths (malformed-200,
-                // stalled continuation_key, 50-page cap) record sync_run_errors
-                // and return false; advancing last_synced_at on a connection that
-                // only partially failed would mask that error in spendula:status.
-                if ($this->syncAccount($connection, $bank, $session, $account, $syncRun, $counters)) {
-                    $anyAccountSynced = true;
+                if (! $this->syncAccount($connection, $bank, $session, $account, $syncRun, $counters)) {
+                    // Non-throwing failure (malformed-200, stalled continuation_key,
+                    // 50-page cap) — sync_run_error already logged inside.
+                    $accountsFailed++;
                 }
             } catch (EnableBankingRevokedException $e) {
                 $connection->status = BankConnectionStatus::Revoked;
@@ -175,22 +179,26 @@ class SyncRunner
             } catch (EnableBankingRateLimitException $e) {
                 $this->logError($syncRun, $account, SyncErrorType::RateLimit, $e);
                 $counters['errors']++;
+                $accountsFailed++;
 
                 // Continuation key already persisted by inner loop; move to next account.
                 continue;
             } catch (EnableBankingServerException $e) {
                 $this->logError($syncRun, $account, SyncErrorType::HttpError, $e);
                 $counters['errors']++;
+                $accountsFailed++;
 
                 continue;
             } catch (EnableBankingException $e) {
                 $this->logError($syncRun, $account, SyncErrorType::HttpError, $e);
                 $counters['errors']++;
+                $accountsFailed++;
 
                 continue;
             } catch (Throwable $e) {
                 $this->logError($syncRun, $account, SyncErrorType::Other, $e);
                 $counters['errors']++;
+                $accountsFailed++;
                 Log::warning('Sync threw unexpectedly', [
                     'event' => 'sync.account.failed',
                     'bank_slug' => $bank->slug,
@@ -201,7 +209,7 @@ class SyncRunner
             }
         }
 
-        if ($anyAccountSynced) {
+        if ($accountsAttempted > 0 && $accountsFailed === 0) {
             $connection->last_synced_at = Carbon::now();
             $connection->save();
         }
@@ -288,6 +296,18 @@ class SyncRunner
 
             foreach ($transactions as $ebTransaction) {
                 if (! is_array($ebTransaction)) {
+                    // A non-array element inside `transactions` is a parse-level
+                    // failure of the page, not a non-BOOK record we can safely
+                    // skip. Surface it as sync_run_error so the operator sees
+                    // the corruption rather than letting the page advance state.
+                    $this->logError(
+                        $syncRun,
+                        $account,
+                        SyncErrorType::ParseError,
+                        new \RuntimeException('EB returned a non-array element inside transactions[].'),
+                    );
+                    $counters['errors']++;
+
                     continue;
                 }
                 $status = isset($ebTransaction['transaction_status']) && is_string($ebTransaction['transaction_status'])

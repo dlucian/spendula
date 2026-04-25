@@ -141,7 +141,11 @@ class PushRunner
             // aborts the entire run so other account groups aren't pushed.
             throw $e;
         } catch (YnabException $e) {
-            $counters['errors']++;
+            // One YNAB call rejecting a batch fails every row in the batch.
+            // Count each rejected row so push_runs.error_count reflects how
+            // many transactions actually need attention; otherwise a
+            // 50-row batch shows up as errors=1 in spendula:push output.
+            $counters['errors'] += count($transactions);
             foreach ($transactions as $transaction) {
                 $transaction->push_attempt_count++;
                 $transaction->last_push_attempt_at = $now;
