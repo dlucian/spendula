@@ -78,7 +78,33 @@ class CallbackHandler
         $session = $this->client->exchangeCode($code);
 
         if (! isset($session['session_id']) || ! is_string($session['session_id'])) {
+            // The auth_request is already consumed and the EB code is one-shot,
+            // so we can't write this through the normal bank_connections.raw_session_response
+            // path (the row needs a session_id). Persist the full envelope to the
+            // log at error level instead, keyed by auth_request_id, so the operator
+            // can still recover the data without restarting the consent flow blind.
+            Log::error('Enable Banking session response missing session_id; raw payload preserved here for forensic recovery.', [
+                'event' => 'callback.malformed_session_id',
+                'auth_request_id' => $authRequest->id,
+                'bank_slug' => $authRequest->bank_slug,
+                'raw_session_response' => $session,
+            ]);
+
             throw new RuntimeException('Enable Banking session response missing session_id.');
+        }
+
+        if (! isset($session['accounts']) || ! is_array($session['accounts'])) {
+            // A "successful" 200 with no accounts list still creates an active
+            // bank_connection (and renders the success page), but spendula:sync
+            // would then become a permanent no-op for this bank. Reject early.
+            Log::error('Enable Banking session response omitted the accounts array.', [
+                'event' => 'callback.missing_accounts',
+                'auth_request_id' => $authRequest->id,
+                'bank_slug' => $authRequest->bank_slug,
+                'raw_session_response' => $session,
+            ]);
+
+            throw new RuntimeException('Enable Banking session response omitted the accounts array.');
         }
 
         // Tolerant valid_until parse: a malformed string would otherwise throw
@@ -145,8 +171,9 @@ class CallbackHandler
             return $connection;
         });
 
+        // accounts shape was validated above; keep the local for upsert iteration.
         /** @var array<int, array<string, mixed>> $accounts */
-        $accounts = is_array($session['accounts'] ?? null) ? $session['accounts'] : [];
+        $accounts = $session['accounts'];
 
         $discovered = [];
         foreach ($accounts as $account) {

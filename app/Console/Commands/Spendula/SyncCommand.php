@@ -24,6 +24,10 @@ class SyncCommand extends Command
             $this->warn('Another sync is already running. Try again shortly.');
 
             return self::FAILURE;
+        } catch (\InvalidArgumentException $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
         } catch (EnableBankingAuthException $e) {
             $this->error('Enable Banking refused our JWT: '.$e->getMessage());
             $this->warn('Fix SPENDULA_ENABLE_BANKING_APP_ID and/or the private key, then re-run.');

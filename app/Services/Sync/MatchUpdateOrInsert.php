@@ -115,13 +115,18 @@ class MatchUpdateOrInsert
 
         $milliunits = Money::toMilliunits((string) $amountNode['amount'], $cdi->value);
 
-        $bookingDate = isset($ebTransaction['booking_date']) && is_string($ebTransaction['booking_date'])
+        $bookingDateRaw = isset($ebTransaction['booking_date']) && is_string($ebTransaction['booking_date'])
             ? $ebTransaction['booking_date']
             : throw new InvalidArgumentException('EB transaction missing booking_date.');
+        $bookingDate = $this->parseDateOrFail('booking_date', $bookingDateRaw);
 
-        $valueDate = isset($ebTransaction['value_date']) && is_string($ebTransaction['value_date'])
-            ? $ebTransaction['value_date']
-            : null;
+        $valueDate = null;
+        if (isset($ebTransaction['value_date']) && is_string($ebTransaction['value_date'])) {
+            // value_date is optional but must parse if present — otherwise the
+            // later insert/update would throw InvalidFormatException out of
+            // SyncRunner's parse-error catch and stall the whole page.
+            $valueDate = $this->parseDateOrFail('value_date', $ebTransaction['value_date']);
+        }
 
         $entryRef = isset($ebTransaction['entry_reference']) && is_string($ebTransaction['entry_reference'])
             ? $ebTransaction['entry_reference']
@@ -291,6 +296,16 @@ class MatchUpdateOrInsert
         }
 
         return Carbon::parse($parsed->bookingDate)->lt($cutoff);
+    }
+
+    private function parseDateOrFail(string $field, string $value): string
+    {
+        $parsed = Carbon::createFromFormat('!Y-m-d', $value);
+        if (! $parsed instanceof Carbon || $parsed->format('Y-m-d') !== $value) {
+            throw new InvalidArgumentException("EB transaction has invalid {$field}='{$value}' — expected YYYY-MM-DD.");
+        }
+
+        return $value;
     }
 
     /** @param  array<string, mixed>  $ebTransaction */

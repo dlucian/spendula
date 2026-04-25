@@ -63,6 +63,13 @@ class SyncRunner
 
     private function runLocked(?string $bankSlug): SyncResult
     {
+        // Validate the slug before creating sync_runs row — sync_runs.bank_slug
+        // is FK-enforced, so an unknown slug from --bank=<typo> would otherwise
+        // surface as a raw QueryException instead of a clean operator error.
+        if ($bankSlug !== null && ! Bank::query()->where('slug', $bankSlug)->exists()) {
+            throw new \InvalidArgumentException("No bank with slug '{$bankSlug}'. Run `php artisan spendula:banks:sync` to refresh the list.");
+        }
+
         $syncRun = SyncRun::query()->create([
             'bank_slug' => $bankSlug,
             'started_at' => Carbon::now(),
