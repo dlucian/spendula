@@ -47,6 +47,25 @@ class CallbackHandler
             );
         }
 
+        // Mark the row consumed BEFORE spending the one-time code with EB. The
+        // conditional update also serves as a race guard: a concurrent callback
+        // for the same state can't both pass the whereNull check. If any later
+        // step (code exchange, session shape validation, account upsert) fails,
+        // the row already reflects that the code was attempted, so the operator
+        // doesn't see a stale "open" auth_request that can never succeed.
+        $rowsAffected = AuthRequest::query()
+            ->whereKey($authRequest->id)
+            ->whereNull('consumed_at')
+            ->update(['consumed_at' => Carbon::now()]);
+
+        if ($rowsAffected === 0) {
+            throw new InvalidCallbackStateException(
+                "Callback state was already consumed by a concurrent request (state={$state})."
+            );
+        }
+
+        $authRequest->refresh();
+
         $session = $this->client->exchangeCode($code);
 
         if (! isset($session['session_id']) || ! is_string($session['session_id'])) {
@@ -54,9 +73,6 @@ class CallbackHandler
         }
 
         return DB::transaction(function () use ($authRequest, $session) {
-            $authRequest->consumed_at = Carbon::now();
-            $authRequest->save();
-
             $validUntil = Carbon::parse((string) ($session['access']['valid_until'] ?? Carbon::now()->addDays(90)->toIso8601String()));
 
             // Step 1: flip the prior active connection to superseded so the partial

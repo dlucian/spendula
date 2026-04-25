@@ -12,13 +12,27 @@ use RuntimeException;
  */
 class Jwt
 {
+    /**
+     * Either $privateKey holds the PEM contents directly (test path), or
+     * $privateKeyPath points at a file that's read on first sign() (production
+     * path via fromConfig). Production must defer the read so a missing/unreadable
+     * key surfaces inside command/controller error handling rather than as an
+     * uncaught throw during container resolution.
+     */
     public function __construct(
         private readonly string $appId,
-        private readonly string $privateKey,
+        private readonly string $privateKey = '',
+        private readonly ?string $privateKeyPath = null,
     ) {}
 
     public function sign(int $ttlSeconds = 3600): string
     {
+        if ($this->appId === '') {
+            throw new RuntimeException('SPENDULA_ENABLE_BANKING_APP_ID is not configured.');
+        }
+
+        $key = $this->resolvePrivateKey();
+
         $now = time();
 
         return FirebaseJwt::encode(
@@ -28,21 +42,25 @@ class Jwt
                 'iat' => $now,
                 'exp' => $now + $ttlSeconds,
             ],
-            $this->privateKey,
+            $key,
             'RS256',
             $this->appId,
         );
     }
 
-    public static function fromConfig(): self
+    private function resolvePrivateKey(): string
     {
-        $appId = (string) config('spendula.enable_banking.app_id');
-        if ($appId === '') {
-            throw new RuntimeException('SPENDULA_ENABLE_BANKING_APP_ID is not configured.');
+        if ($this->privateKey !== '') {
+            return $this->privateKey;
         }
 
-        $path = (string) config('spendula.enable_banking.private_key_path');
-        $absolute = str_starts_with($path, '/') ? $path : base_path($path);
+        if ($this->privateKeyPath === null || $this->privateKeyPath === '') {
+            throw new RuntimeException('Enable Banking private key path is not configured.');
+        }
+
+        $absolute = str_starts_with($this->privateKeyPath, '/')
+            ? $this->privateKeyPath
+            : base_path($this->privateKeyPath);
 
         if (! is_readable($absolute)) {
             throw new RuntimeException("Enable Banking private key not readable at: {$absolute}");
@@ -53,6 +71,15 @@ class Jwt
             throw new RuntimeException("Enable Banking private key is empty at: {$absolute}");
         }
 
-        return new self($appId, $key);
+        return $key;
+    }
+
+    public static function fromConfig(): self
+    {
+        return new self(
+            appId: (string) config('spendula.enable_banking.app_id'),
+            privateKey: '',
+            privateKeyPath: (string) config('spendula.enable_banking.private_key_path'),
+        );
     }
 }

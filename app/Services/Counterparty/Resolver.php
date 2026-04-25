@@ -90,7 +90,10 @@ class Resolver
         }
 
         $lower = mb_strtolower($counterparty);
-        $noAlphanum = preg_replace('/[^a-z0-9]+/', ' ', $lower) ?? '';
+        // Unicode-aware: \p{L}\p{N} preserves diacritics and non-Latin scripts.
+        // The previous /[^a-z0-9]+/ stripped them, so "Bäckerei" became "b ckerei"
+        // and Cyrillic / CJK names collapsed to '', breaking dedup matching.
+        $noAlphanum = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $lower) ?? '';
 
         return trim(preg_replace('/\s+/', ' ', $noAlphanum) ?? '');
     }

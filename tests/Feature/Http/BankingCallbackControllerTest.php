@@ -147,9 +147,11 @@ class BankingCallbackControllerTest extends TestCase
         $response = $this->get("/banking/callback?code=c&state={$auth->state}");
         $response->assertStatus(502);
 
-        // auth_request not consumed (exception before commit, and we only mark consumed inside the transaction).
+        // auth_request IS consumed: the one-time code was spent on EB even though the
+        // exchange failed, so the row must reflect that. Operators retry by running
+        // spendula:auth:start fresh, not by re-hitting the same callback URL.
         $auth->refresh();
-        $this->assertNull($auth->consumed_at);
+        $this->assertNotNull($auth->consumed_at);
         $this->assertSame(0, BankConnection::query()->count());
     }
 
