@@ -9,6 +9,7 @@ use App\Models\Transaction;
 use App\Services\Counterparty\Resolver;
 use App\Services\Money\Money;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 /**
@@ -62,30 +63,47 @@ class MatchUpdateOrInsert
 
             $incomingNormalized = Resolver::normalize($parsed->rawCounterparty);
             $incomingHasRef = $parsed->entryReference !== null && $parsed->entryReference !== '';
-            $fundamentalMatches = $candidates->filter(function (Transaction $t) use ($incomingNormalized, $incomingHasRef): bool {
-                // Exclude tagged candidates only when the incoming row also carries
-                // its own entry_reference: step 1 would have caught the match if
-                // both refs were the same, so a tagged candidate here is a
-                // different transaction (same fundamentals, different ref).
-                //
-                // When the incoming row has NO entry_reference, the stored row's
-                // ref doesn't disqualify it — providers that drop entry_reference
-                // on later overlap syncs (the reverse of absent→present, which
-                // step 2 already handles) still need to land on the same row.
-                if ($incomingHasRef && is_string($t->entry_reference) && $t->entry_reference !== '') {
-                    return false;
-                }
 
-                return Resolver::normalize($this->extractRawCounterpartyFromStored($t)) === $incomingNormalized;
-            });
+            $counterpartyMatches = $candidates->filter(
+                fn (Transaction $t): bool => Resolver::normalize($this->extractRawCounterpartyFromStored($t)) === $incomingNormalized,
+            );
 
-            if ($fundamentalMatches->count() === 1) {
-                $match = $fundamentalMatches->first();
-            } elseif ($fundamentalMatches->count() > 1) {
+            // Untagged candidates first — these are the "default" pool that the
+            // pre-overlap matching ladder always considered. If the incoming row
+            // has its own entry_reference, tagged candidates are by definition
+            // different transactions (step 1 would have caught them otherwise),
+            // so we only ever match against the untagged pool here.
+            $untaggedMatches = $counterpartyMatches->filter(
+                fn (Transaction $t): bool => ! is_string($t->entry_reference) || $t->entry_reference === '',
+            );
+
+            if ($untaggedMatches->count() === 1) {
+                $match = $untaggedMatches->first();
+            } elseif ($untaggedMatches->count() > 1) {
                 /** @var int $maxOccurrence */
-                $maxOccurrence = (int) $fundamentalMatches->max('occurrence');
+                $maxOccurrence = (int) $untaggedMatches->max('occurrence');
 
                 return $this->insert($parsed, occurrence: $maxOccurrence + 1);
+            } elseif (! $incomingHasRef) {
+                // No untagged candidate, but incoming has no ref either. Fall
+                // back to tagged candidates (the absent→present-then-absent
+                // overlap case): a single tagged match is the same row with
+                // its ref dropped on the later sync. Two or more tagged
+                // matches are ambiguous — we cannot tell which the untagged
+                // incoming corresponds to, so dedupe rather than insert a
+                // duplicate occurrence.
+                $taggedMatches = $counterpartyMatches->filter(
+                    fn (Transaction $t): bool => is_string($t->entry_reference) && $t->entry_reference !== '',
+                );
+
+                if ($taggedMatches->count() === 1) {
+                    $match = $taggedMatches->first();
+                } elseif ($taggedMatches->count() > 1) {
+                    /** @var Transaction $first */
+                    $first = $taggedMatches->first();
+
+                    return new ApplyResult($first, ApplyOutcome::Deduped);
+                }
             }
         }
 
@@ -215,17 +233,24 @@ class MatchUpdateOrInsert
     {
         // SPEC §6.4 marks amount/currency/cdi/booking_date as immutable after insert.
         // If a later sync of the same matched row (most often via entry_reference)
-        // presents different fundamentals, that's bank-side drift we must not silently
-        // paper over by overwriting raw_payload — throw so SyncRunner records a
-        // parse_error row and the operator can investigate before bad state reaches
-        // YNAB.
-        if (
-            $existing->amount_milliunits !== $parsed->amountMilliunits
+        // presents different fundamentals, that's bank-side drift. Behavior depends
+        // on whether the operator has already acted on the row:
+        //
+        //   * status=fetched (still under operator review) — throw so SyncRunner
+        //     records a parse_error and the bad state is investigated before it
+        //     can reach YNAB.
+        //   * any other status (approved/pushed/skipped/transfer/tracking) — log
+        //     and return Deduped. Failing here would make spendula:sync exit
+        //     non-zero on every overlap and the operator cannot act on the local
+        //     row anyway: it must be reconciled manually in YNAB. SPEC §6.4 only
+        //     calls for a hard fail while the row is still fetched.
+        $hasDrift = $existing->amount_milliunits !== $parsed->amountMilliunits
             || strtoupper($existing->currency) !== strtoupper($parsed->currency)
             || $existing->credit_debit_indicator !== $parsed->creditDebitIndicator
-            || $existing->booking_date->toDateString() !== $parsed->bookingDate
-        ) {
-            throw new InvalidArgumentException(sprintf(
+            || $existing->booking_date->toDateString() !== $parsed->bookingDate;
+
+        if ($hasDrift) {
+            $message = sprintf(
                 'Drift detected on transaction %s — immutable fields changed since insert. '
                 .'Stored: amount=%d currency=%s cdi=%s booking_date=%s. '
                 .'Incoming: amount=%d currency=%s cdi=%s booking_date=%s.',
@@ -238,7 +263,20 @@ class MatchUpdateOrInsert
                 $parsed->currency,
                 $parsed->creditDebitIndicator->value,
                 $parsed->bookingDate,
-            ));
+            );
+
+            if ($existing->status === TransactionStatus::Fetched) {
+                throw new InvalidArgumentException($message);
+            }
+
+            Log::warning('Bank drift on transaction past fetched state — leaving local row unchanged.', [
+                'event' => 'sync.drift_after_review',
+                'transaction_id' => $existing->id,
+                'transaction_status' => $existing->status->value,
+                'reason' => $message,
+            ]);
+
+            return new ApplyResult($existing, ApplyOutcome::Deduped);
         }
 
         $changed = false;

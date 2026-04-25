@@ -12,6 +12,7 @@ use App\Models\BankAccountSyncState;
 use App\Models\BankConnection;
 use App\Services\EnableBanking\Exceptions\EnableBankingException;
 use App\Services\EnableBanking\Exceptions\InvalidCallbackStateException;
+use App\Services\EnableBanking\Exceptions\LocalConfigException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -56,8 +57,14 @@ class CallbackHandler
         // Local preflight: sign and discard a JWT so a missing app id or unreadable
         // private key surfaces here (still recoverable: fix config and retry the
         // same callback) instead of after we've already marked the row consumed
-        // and the EB code is irrecoverable.
-        $this->client->preflight();
+        // and the EB code is irrecoverable. Wrap as LocalConfigException so the
+        // controller can render a recover-by-fixing-config page rather than
+        // pointing the user to `spendula:auth:start`.
+        try {
+            $this->client->preflight();
+        } catch (RuntimeException $e) {
+            throw new LocalConfigException($e->getMessage(), $e->getCode(), $e);
+        }
 
         // Now mark the row consumed BEFORE the actual exchange. The conditional
         // update is a race guard: concurrent callbacks for the same state can't

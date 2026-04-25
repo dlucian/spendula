@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\EnableBanking\CallbackHandler;
 use App\Services\EnableBanking\Exceptions\EnableBankingException;
 use App\Services\EnableBanking\Exceptions\InvalidCallbackStateException;
+use App\Services\EnableBanking\Exceptions\LocalConfigException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
@@ -32,6 +33,22 @@ class BankingCallbackController extends Controller
                 'This callback link has expired or has already been consumed. Start a new auth flow with '
                 .'`php artisan spendula:auth:start <bank_slug>`.',
                 status: 400,
+            );
+        } catch (LocalConfigException $e) {
+            // Local JWT/config failure raised by Client::preflight(). The
+            // auth_request has NOT been consumed yet and `/sessions` was
+            // never called, so the operator can fix config (app id, private
+            // key path) and retry the same callback URL — do NOT tell them
+            // to start a fresh auth flow.
+            Log::warning('Enable Banking callback aborted before exchange (local config error)', [
+                'event' => 'callback.local_config_error',
+                'reason' => $e->getMessage(),
+            ]);
+
+            return $this->error(
+                'Local Enable Banking configuration error: '.$e->getMessage()
+                .' Fix the configuration and reload this URL — no new auth flow is needed.',
+                status: 500,
             );
         } catch (EnableBankingException $e) {
             Log::warning('Enable Banking callback failed', [

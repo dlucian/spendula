@@ -335,15 +335,23 @@ class SyncRunner
                 try {
                     $result = $this->matchUpdateOrInsert->apply($account, $ebTransaction);
                 } catch (\InvalidArgumentException $e) {
-                    // A single malformed BOOK item (missing transaction_amount,
-                    // booking_date, unknown CDI, etc.) must not abort the whole
-                    // page — that would prevent last_continuation_key from being
-                    // persisted and the bad row would replay on every later sync,
-                    // permanently starving every other transaction on this account.
+                    // A malformed BOOK item (missing transaction_amount,
+                    // booking_date, unknown CDI, etc.) is a parse-level page
+                    // failure: continuing past it would advance
+                    // last_continuation_key, after which the 7-day overlap
+                    // window is the only chance to recover the row — fixing
+                    // the parser later cannot reach it. Persist failure
+                    // metadata and abort the account so the page remains
+                    // resumable until the operator addresses it.
                     $this->logError($syncRun, $account, SyncErrorType::ParseError, $e);
                     $counters['errors']++;
 
-                    continue;
+                    $syncState->last_continuation_key = $continuationKey;
+                    $syncState->last_sync_error_at = Carbon::now();
+                    $syncState->consecutive_failure_count++;
+                    $syncState->save();
+
+                    return false;
                 }
 
                 match ($result->outcome) {
