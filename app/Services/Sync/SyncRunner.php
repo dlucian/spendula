@@ -249,6 +249,14 @@ class SyncRunner
                 );
                 $counters['errors']++;
 
+                // Persist failure state so spendula:status reflects the abort —
+                // otherwise consecutive_failure_count never increments and an
+                // account stuck in a continuation_key loop looks healthy.
+                $syncState->last_continuation_key = $continuationKey;
+                $syncState->last_sync_error_at = Carbon::now();
+                $syncState->consecutive_failure_count++;
+                $syncState->save();
+
                 return false;
             }
 
@@ -297,9 +305,11 @@ class SyncRunner
             foreach ($transactions as $ebTransaction) {
                 if (! is_array($ebTransaction)) {
                     // A non-array element inside `transactions` is a parse-level
-                    // failure of the page, not a non-BOOK record we can safely
-                    // skip. Surface it as sync_run_error so the operator sees
-                    // the corruption rather than letting the page advance state.
+                    // failure of the page. Persist failure state and abort the
+                    // account: continuing would advance last_continuation_key
+                    // past the malformed page so the bad row could never be
+                    // recovered, while the missing-`transactions`-array branch
+                    // above already aborts the page on the same severity.
                     $this->logError(
                         $syncRun,
                         $account,
@@ -308,7 +318,12 @@ class SyncRunner
                     );
                     $counters['errors']++;
 
-                    continue;
+                    $syncState->last_continuation_key = $continuationKey;
+                    $syncState->last_sync_error_at = Carbon::now();
+                    $syncState->consecutive_failure_count++;
+                    $syncState->save();
+
+                    return false;
                 }
                 $status = isset($ebTransaction['transaction_status']) && is_string($ebTransaction['transaction_status'])
                     ? $ebTransaction['transaction_status']
@@ -362,6 +377,14 @@ class SyncRunner
                     new \RuntimeException('continuation_key did not advance between pages.'),
                 );
                 $counters['errors']++;
+
+                // Persist failure state so a stalled-key loop surfaces in
+                // spendula:status; without this consecutive_failure_count never
+                // increments and the operator can't tell the account is stuck.
+                $syncState->last_continuation_key = $continuationKey;
+                $syncState->last_sync_error_at = Carbon::now();
+                $syncState->consecutive_failure_count++;
+                $syncState->save();
 
                 return false;
             }

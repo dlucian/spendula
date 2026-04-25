@@ -61,13 +61,18 @@ class MatchUpdateOrInsert
                 ->get();
 
             $incomingNormalized = Resolver::normalize($parsed->rawCounterparty);
-            $fundamentalMatches = $candidates->filter(function (Transaction $t) use ($incomingNormalized): bool {
-                // A candidate that already carries a non-empty entry_reference is
-                // a different transaction by identity — step 1 would have hit it
-                // if we were the same row. Excluding those candidates here prevents
-                // a later legitimate transaction (same fundamentals, different
-                // entry_reference) from being merged into the previously-tagged row.
-                if (is_string($t->entry_reference) && $t->entry_reference !== '') {
+            $incomingHasRef = $parsed->entryReference !== null && $parsed->entryReference !== '';
+            $fundamentalMatches = $candidates->filter(function (Transaction $t) use ($incomingNormalized, $incomingHasRef): bool {
+                // Exclude tagged candidates only when the incoming row also carries
+                // its own entry_reference: step 1 would have caught the match if
+                // both refs were the same, so a tagged candidate here is a
+                // different transaction (same fundamentals, different ref).
+                //
+                // When the incoming row has NO entry_reference, the stored row's
+                // ref doesn't disqualify it — providers that drop entry_reference
+                // on later overlap syncs (the reverse of absent→present, which
+                // step 2 already handles) still need to land on the same row.
+                if ($incomingHasRef && is_string($t->entry_reference) && $t->entry_reference !== '') {
                     return false;
                 }
 
