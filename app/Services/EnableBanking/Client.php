@@ -112,7 +112,12 @@ class Client
      */
     private function requestJson(string $method, string $path, array $query = [], array $body = []): array
     {
-        $attempts = 1 + count(self::RETRY_DELAYS_MS);
+        // Only GETs are idempotent enough to safely retry on transport or 5xx
+        // failures. POSTs (e.g. /sessions, /auth) create one-shot server state;
+        // a retry after a request that may have already reached EB would
+        // double-spend a callback code or mint a duplicate auth_request.
+        $isIdempotent = strtoupper($method) === 'GET';
+        $attempts = $isIdempotent ? 1 + count(self::RETRY_DELAYS_MS) : 1;
         $response = null;
         $lastConnectionError = null;
 

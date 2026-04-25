@@ -174,6 +174,10 @@ class ReviewSession
 
     private static function stdinIsTty(): bool
     {
-        return function_exists('posix_isatty') && defined('STDIN') && posix_isatty(STDIN);
+        // stream_isatty is built into PHP 7.2+ (no extension required); the
+        // production php:8.4-fpm-alpine image does not install ext-posix, so
+        // posix_isatty would always return false and silently disable the
+        // approval loop inside `docker compose exec -it`.
+        return defined('STDIN') && stream_isatty(STDIN);
     }
 }
