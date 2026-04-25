@@ -220,7 +220,28 @@ class SyncRunner
 
             $pagesVisited++;
 
-            $transactions = is_array($response['transactions'] ?? null) ? $response['transactions'] : [];
+            // EB returning HTTP 200 without a `transactions` array is not the same
+            // as "no new transactions" (which is `transactions: []`). Treat the
+            // missing/non-array shape as a parse_error so operators see the failure
+            // instead of a silent zero-import sync.
+            if (! array_key_exists('transactions', $response) || ! is_array($response['transactions'])) {
+                $this->logError(
+                    $syncRun,
+                    $account,
+                    SyncErrorType::ParseError,
+                    new \RuntimeException('EB returned 200 but the page omitted or malformed the transactions array.'),
+                );
+                $counters['errors']++;
+
+                $syncState->last_continuation_key = $continuationKey;
+                $syncState->last_sync_error_at = Carbon::now();
+                $syncState->consecutive_failure_count++;
+                $syncState->save();
+
+                return;
+            }
+
+            $transactions = $response['transactions'];
             $maxBookingDate = null;
 
             foreach ($transactions as $ebTransaction) {

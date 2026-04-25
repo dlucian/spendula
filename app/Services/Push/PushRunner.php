@@ -107,6 +107,17 @@ class PushRunner
 
         foreach ($transactions as $transaction) {
             $payload = $this->payloadBuilder->build($transaction, $account);
+
+            // Pin the import_id to the local row before talking to YNAB. If the
+            // request succeeds server-side but our retry happens after a later
+            // sync mutated raw_payload/counterparty, the next PayloadBuilder::build()
+            // would otherwise hash a different import_id and the duplicate_import_ids
+            // path could no longer protect us from creating a second transaction.
+            if ($transaction->ynab_import_id === null) {
+                $transaction->ynab_import_id = (string) $payload['import_id'];
+                $transaction->save();
+            }
+
             $payloads[] = $payload;
             $byImportId[(string) $payload['import_id']] = $transaction;
         }

@@ -27,14 +27,23 @@ class PayloadBuilder
             throw new RuntimeException('bank_account has no ynab_account_id — was accounts:seed-mock skipped?');
         }
 
-        $rawCounterparty = $this->extractRawCounterparty($transaction);
-        $importId = DedupHasher::importId(
-            bankAccountId: $transaction->bank_account_id,
-            bookingDate: $transaction->booking_date->toDateString(),
-            amountMilliunits: $transaction->amount_milliunits,
-            rawCounterparty: $rawCounterparty,
-            occurrence: $transaction->occurrence,
-        );
+        // Reuse the import_id we generated on a previous push attempt if one exists.
+        // Without this, a later sync that improves raw_payload/counterparty would
+        // change DedupHasher::importId() output between retries, defeating YNAB's
+        // duplicate_import_ids dedup and risking a second YNAB transaction for the
+        // same row. PushRunner persists this column before the HTTP call.
+        if (is_string($transaction->ynab_import_id) && $transaction->ynab_import_id !== '') {
+            $importId = $transaction->ynab_import_id;
+        } else {
+            $rawCounterparty = $this->extractRawCounterparty($transaction);
+            $importId = DedupHasher::importId(
+                bankAccountId: $transaction->bank_account_id,
+                bookingDate: $transaction->booking_date->toDateString(),
+                amountMilliunits: $transaction->amount_milliunits,
+                rawCounterparty: $rawCounterparty,
+                occurrence: $transaction->occurrence,
+            );
+        }
 
         $payeeName = $transaction->counterparty_name;
         if (is_string($payeeName) && mb_strlen($payeeName) > self::PAYEE_MAX) {
