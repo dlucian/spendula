@@ -19,6 +19,7 @@ use App\Services\EnableBanking\Exceptions\EnableBankingRateLimitException;
 use App\Services\EnableBanking\Exceptions\EnableBankingRevokedException;
 use App\Services\EnableBanking\Exceptions\EnableBankingServerException;
 use App\Services\Locks\AdvisoryLock;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -77,8 +78,17 @@ class SyncRunner
 
         $counters = ['inserted' => 0, 'updated' => 0, 'deduped' => 0, 'errors' => 0];
 
+        // Honor `banks.active` so an operator who removes a bank from
+        // config/spendula-banks.php (banks:sync flips active=false) actually
+        // stops pulling transactions from that bank. Filtering only on
+        // bank_connections.status would leave the connection live until the
+        // operator manually revoked it.
         $connections = BankConnection::query()
             ->where('status', BankConnectionStatus::Active->value)
+            ->whereHas('bank', function ($q): void {
+                /** @var Builder<Bank> $q */
+                $q->where('active', true);
+            })
             ->when($bankSlug !== null, fn ($q) => $q->where('bank_slug', $bankSlug))
             ->with(['bank'])
             ->get();

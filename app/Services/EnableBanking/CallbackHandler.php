@@ -96,18 +96,21 @@ class CallbackHandler
             throw new RuntimeException('Enable Banking session response missing session_id.');
         }
 
-        if (! isset($session['accounts']) || ! is_array($session['accounts'])) {
-            // A "successful" 200 with no accounts list still creates an active
-            // bank_connection (and renders the success page), but spendula:sync
-            // would then become a permanent no-op for this bank. Reject early.
-            Log::error('Enable Banking session response omitted the accounts array.', [
+        if (! isset($session['accounts']) || ! is_array($session['accounts']) || $session['accounts'] === []) {
+            // A "successful" 200 with no accounts list — or with an explicit
+            // empty array, which the EB sandbox can return when consent is
+            // granted before any Mock ASPSP account is provisioned — still
+            // creates an active bank_connection and renders the success page,
+            // but spendula:sync would then become a permanent no-op for this
+            // bank. Reject early.
+            Log::error('Enable Banking session response had no accounts.', [
                 'event' => 'callback.missing_accounts',
                 'auth_request_id' => $authRequest->id,
                 'bank_slug' => $authRequest->bank_slug,
                 'raw_session_response' => $session,
             ]);
 
-            throw new RuntimeException('Enable Banking session response omitted the accounts array.');
+            throw new RuntimeException('Enable Banking session response had no accounts.');
         }
 
         // Tolerant valid_until parse: a malformed string would otherwise throw
