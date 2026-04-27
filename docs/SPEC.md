@@ -88,7 +88,8 @@ These are the load-bearing decisions. Everything downstream defers to them.
 
 Spendula exposes one HTTP route (the OAuth callback) and a set of artisan commands. Each command below is tagged with its phase-1 state: **real** = fully implemented in phase 1; **stub** = exists as an artisan command but prints "not yet implemented" until its feature lands.
 
-- `spendula:banks:sync` — reconcile `banks` table with `config/spendula-banks.php` — **real in phase 1**
+- `spendula:banks:sync` — upsert fixture banks (e.g. `mock`) from `config/spendula-banks.php`; never touches operator-added rows — **real in phase 1**
+- `spendula:banks:add` — insert an operator bank into the `banks` table directly. Operator banks never appear in source. — **real in phase 2**
 - `spendula:auth:start {bank_slug}` — generate a consent URL for a bank — **real in phase 1**
 - `spendula:accounts:map` — interactive mapping of bank accounts to YNAB accounts — **stub in phase 1** (phase 1 has one bank, one account; mapping is handled by a one-off seed or inline config)
 - `spendula:sync [--bank=slug]` — fetch new transactions — **real in phase 1** (on-budget flow only; tracking-account path is phase-2)
@@ -159,11 +160,11 @@ Laravel migrations. Standard `created_at` / `updated_at` on every table. UUIDv7 
 
 ### 4.1 `banks`
 
-Reference table, seeded from `config/spendula-banks.php` via `spendula:banks:sync`.
+Reference table. Fixture banks (e.g. `mock`) are seeded from `config/spendula-banks.php` via `spendula:banks:sync`; operator banks are added directly via `spendula:banks:add` and never appear in source so this repo can ship publicly without leaking which institutions a given operator banks with.
 
 | column | type | notes |
 |---|---|---|
-| `slug` | string, PK | e.g. `millennium`, `ing_ro_personal`, `revolut` |
+| `slug` | string, PK | lowercase ascii — operator-chosen, never named in source |
 | `display_name` | string | e.g. `Millennium BCP` |
 | `aspsp_name` | string | exact Enable Banking ASPSP name |
 | `aspsp_country` | char(2) | ISO 3166-1 alpha-2 |

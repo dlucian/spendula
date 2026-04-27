@@ -78,9 +78,8 @@ class SyncRunner
 
         $counters = ['inserted' => 0, 'updated' => 0, 'deduped' => 0, 'errors' => 0];
 
-        // Honor `banks.active` so an operator who removes a bank from
-        // config/spendula-banks.php (banks:sync flips active=false) actually
-        // stops pulling transactions from that bank. Filtering only on
+        // Honor `banks.active` so an operator who deactivates a bank actually
+        // stops pulling transactions from it. Filtering only on
         // bank_connections.status would leave the connection live until the
         // operator manually revoked it.
         $connections = BankConnection::query()

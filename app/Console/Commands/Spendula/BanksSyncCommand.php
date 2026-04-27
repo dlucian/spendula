@@ -9,9 +9,15 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 #[Signature('spendula:banks:sync')]
-#[Description('Reconcile the banks table with config/spendula-banks.php.')]
+#[Description('Upsert baseline banks from config/spendula-banks.php into the banks table.')]
 class BanksSyncCommand extends Command
 {
+    /**
+     * Upserts the fixture banks shipped in config/spendula-banks.php (just the
+     * mock bank, used by tests). Does NOT deactivate or delete operator-added
+     * rows — operator banks live in the database, are added via banks:add, and
+     * are never named in source code.
+     */
     public function handle(): int
     {
         /** @var array<string, array<string, mixed>> $config */
@@ -32,19 +38,11 @@ class BanksSyncCommand extends Command
                     ]
                 );
             }
-
-            $configSlugs = array_keys($config);
-
-            Bank::query()
-                ->when($configSlugs !== [], fn ($q) => $q->whereNotIn('slug', $configSlugs))
-                ->where('active', true)
-                ->update(['active' => false]);
         });
 
-        $active = Bank::query()->where('active', true)->count();
-        $inactive = Bank::query()->where('active', false)->count();
-
-        $this->info("banks:sync — {$active} active, {$inactive} inactive.");
+        $upserted = count($config);
+        $totalActive = Bank::query()->where('active', true)->count();
+        $this->info("banks:sync — {$upserted} fixture(s) upserted; {$totalActive} active total.");
 
         return self::SUCCESS;
     }

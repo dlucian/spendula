@@ -61,28 +61,21 @@ class BanksSyncCommandTest extends TestCase
         $this->assertEquals($firstUpdatedAt, Bank::query()->findOrFail('mock')->updated_at);
     }
 
-    public function test_removing_from_config_deactivates_without_deleting(): void
+    public function test_preserves_operator_added_banks_not_in_config(): void
     {
-        Config::set('spendula-banks', [
-            'mock' => [
-                'display_name' => 'Mock ASPSP',
-                'aspsp_name' => 'Mock ASPSP',
-                'aspsp_country' => 'FI',
-                'psu_type' => 'personal',
-                'default_currency' => 'EUR',
-                'sync_lookback_days' => 90,
-            ],
-            'zombie' => [
-                'display_name' => 'Zombie Bank',
-                'aspsp_name' => 'Zombie Bank',
-                'aspsp_country' => 'SE',
-                'psu_type' => 'personal',
-                'default_currency' => 'EUR',
-                'sync_lookback_days' => 30,
-            ],
+        // Operator-added bank: directly inserted into the DB, never named in
+        // config/spendula-banks.php. banks:sync must leave it untouched so the
+        // public source tree never lists which banks the operator uses.
+        Bank::query()->create([
+            'slug' => 'operator-added',
+            'display_name' => 'Operator Added',
+            'aspsp_name' => 'Operator Added',
+            'aspsp_country' => 'PT',
+            'psu_type' => PsuType::Personal,
+            'default_currency' => 'EUR',
+            'sync_lookback_days' => 90,
+            'active' => true,
         ]);
-
-        $this->artisan('spendula:banks:sync')->assertSuccessful();
 
         Config::set('spendula-banks', [
             'mock' => [
@@ -97,8 +90,11 @@ class BanksSyncCommandTest extends TestCase
 
         $this->artisan('spendula:banks:sync')->assertSuccessful();
 
-        $this->assertSame(2, Bank::query()->count(), 'Bank row must be preserved, not deleted.');
+        $this->assertSame(2, Bank::query()->count());
         $this->assertTrue(Bank::query()->findOrFail('mock')->active);
-        $this->assertFalse(Bank::query()->findOrFail('zombie')->active);
+        $this->assertTrue(
+            Bank::query()->findOrFail('operator-added')->active,
+            'Operator-added bank must stay active after a sync that does not mention it.'
+        );
     }
 }

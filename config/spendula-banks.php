@@ -1,12 +1,17 @@
 <?php
 
 /*
- * Bank catalogue (SPEC §4.1). Phase 1 ships only `mock`; real banks arrive in
- * phase 2 once the production Enable Banking app is approved and IBANs are
- * whitelisted (SPEC §9.5, PLAN §2c).
+ * Baseline bank fixtures (SPEC §4.1). Ships only the `mock` bank — used by
+ * tests and the local sandbox flow.
  *
- * Keys are the `banks.slug` primary key. Rows removed from this file are NOT
- * deleted by `spendula:banks:sync` — they are marked `active = false`.
+ * Operator banks (the ones the operator actually uses) are NOT defined here.
+ * This file ships in a public repo and listing real banks would leak which
+ * institutions a given operator banks with. Operators add their own banks
+ * directly into the `banks` table via `spendula:banks:add`, which keeps that
+ * choice out of source control entirely.
+ *
+ * `spendula:banks:sync` upserts the fixtures below; it never deactivates or
+ * deletes operator-added rows.
  */
 
 return [
@@ -15,15 +20,6 @@ return [
         'display_name' => 'Mock ASPSP',
         'aspsp_name' => 'Mock ASPSP',
         'aspsp_country' => 'FI',
-        'psu_type' => 'personal',
-        'default_currency' => 'EUR',
-        'sync_lookback_days' => 90,
-    ],
-
-    'bcp' => [
-        'display_name' => 'Millennium BCP',
-        'aspsp_name' => 'Banco Comercial Portugues',
-        'aspsp_country' => 'PT',
         'psu_type' => 'personal',
         'default_currency' => 'EUR',
         'sync_lookback_days' => 90,
