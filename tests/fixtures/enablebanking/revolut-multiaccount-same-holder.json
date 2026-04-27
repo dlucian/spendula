@@ -1,0 +1,94 @@
+{
+  "aspsp": {
+    "name": "Revolut",
+    "country": "LT"
+  },
+  "access": {
+    "accounts": null,
+    "balances": true,
+    "valid_until": "2026-07-26T20:09:56Z",
+    "transactions": true
+  },
+  "accounts": [
+    {
+      "uid": "79f42c33-b1f6-4d7c-b513-0465d11b6e43",
+      "name": "Test Operator",
+      "usage": "PRIV",
+      "details": null,
+      "product": null,
+      "currency": "EUR",
+      "legal_age": null,
+      "account_id": {
+        "iban": "LT890000000000000000",
+        "other": null
+      },
+      "psu_status": null,
+      "credit_limit": null,
+      "postal_address": null,
+      "all_account_ids": [
+        {
+          "issuer": null,
+          "scheme_name": "IBAN",
+          "identification": "LT891111111111111111"
+        },
+        {
+          "issuer": null,
+          "scheme_name": "IBAN",
+          "identification": "LT891111111111111111"
+        }
+      ],
+      "account_servicer": null,
+      "cash_account_type": "CACC",
+      "identification_hash": "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXSwKWwoiYWNjb3VudCIsCiJjdXJyZW5jeSIKXQpd.75nG1fxjIecawgfdIHvvAmG60SQlrwF/3I18vgK9UMI=",
+      "identification_hashes": [
+        "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXQpd.grpk81hWIshiXj967wEwY3J78P6B/1lnuEBh6CeWWZE=",
+        "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXQpd.grpk81hWIshiXj967wEwY3J78P6B/1lnuEBh6CeWWZE=",
+        "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXSwKWwoiYWNjb3VudCIsCiJjdXJyZW5jeSIKXQpd.75nG1fxjIecawgfdIHvvAmG60SQlrwF/3I18vgK9UMI=",
+        "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXSwKWwoiYWNjb3VudCIsCiJjdXJyZW5jeSIKXQpd.75nG1fxjIecawgfdIHvvAmG60SQlrwF/3I18vgK9UMI=",
+        "WwpbCiJhc3BzcF9uYW1lIgpdLApbCiJhc3BzcF9jb3VudHJ5IgpdLApbCiJhY2NvdW50IiwKInJlc291cmNlX2lkIgpdCl0=.t2OJe3q9qShuQyBQgV4+cSAb3/qG1TmYbtM4TBFUru8=",
+        "WwpbCiJhc3BzcF9uYW1lIgpdLApbCiJhc3BzcF9jb3VudHJ5IgpdLApbCiJhY2NvdW50IiwKIm5hbWUiCl0KXQ==.yKUHdB2c+kZJpw+eyjTLonFkVOD2ByoSu9DmEbLVtVU="
+      ]
+    },
+    {
+      "uid": "7f4ad85c-f041-40dd-a96f-a4dcde07f0d3",
+      "name": "Test Operator",
+      "usage": "PRIV",
+      "details": null,
+      "product": null,
+      "currency": "RON",
+      "legal_age": null,
+      "account_id": {
+        "iban": "RO99REVO0000000000000000",
+        "other": null
+      },
+      "psu_status": null,
+      "credit_limit": null,
+      "postal_address": null,
+      "all_account_ids": [
+        {
+          "issuer": null,
+          "scheme_name": "IBAN",
+          "identification": "LT891111111111111111"
+        },
+        {
+          "issuer": null,
+          "scheme_name": "IBAN",
+          "identification": "RO83REVO0000181298697300"
+        }
+      ],
+      "account_servicer": null,
+      "cash_account_type": "CACC",
+      "identification_hash": "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXSwKWwoiYWNjb3VudCIsCiJjdXJyZW5jeSIKXQpd.qYzPCLnt2JQyitG3BTw3L6s08tn3wSaQVqcUJbBEsjE=",
+      "identification_hashes": [
+        "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXQpd.grpk81hWIshiXj967wEwY3J78P6B/1lnuEBh6CeWWZE=",
+        "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXQpd.gdC8SFXXtcit+YLq0x2DNp1rfZ76vCMIflZhdsLGHls=",
+        "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXSwKWwoiYWNjb3VudCIsCiJjdXJyZW5jeSIKXQpd.zcduefCAiGspHzcuSOiVrsq5K84TKzZS2abmlDlQjF0=",
+        "WwpbCiJhY2NvdW50IiwKImFjY291bnRfaWQiLAoiaWJhbiIKXSwKWwoiYWNjb3VudCIsCiJjdXJyZW5jeSIKXQpd.qYzPCLnt2JQyitG3BTw3L6s08tn3wSaQVqcUJbBEsjE=",
+        "WwpbCiJhc3BzcF9uYW1lIgpdLApbCiJhc3BzcF9jb3VudHJ5IgpdLApbCiJhY2NvdW50IiwKInJlc291cmNlX2lkIgpdCl0=.oAPASGLSMJe56M+YxKeonn/kX95dbmmODTJAARBif98=",
+        "WwpbCiJhc3BzcF9uYW1lIgpdLApbCiJhc3BzcF9jb3VudHJ5IgpdLApbCiJhY2NvdW50IiwKIm5hbWUiCl0KXQ==.yKUHdB2c+kZJpw+eyjTLonFkVOD2ByoSu9DmEbLVtVU="
+      ]
+    }
+  ],
+  "psu_type": "personal",
+  "session_id": "a41009c8-3820-4774-b791-89fb510ae7f1"
+}
