@@ -20,4 +20,13 @@ return [
         'sync_lookback_days' => 90,
     ],
 
+    'bcp' => [
+        'display_name' => 'Millennium BCP',
+        'aspsp_name' => 'Banco Comercial Portugues',
+        'aspsp_country' => 'PT',
+        'psu_type' => 'personal',
+        'default_currency' => 'EUR',
+        'sync_lookback_days' => 90,
+    ],
+
 ];
