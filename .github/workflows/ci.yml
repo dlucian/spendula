@@ -39,7 +39,7 @@ jobs:
       DB_PASSWORD: postgres
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up PHP 8.4
         uses: shivammathur/setup-php@v2
@@ -50,7 +50,7 @@ jobs:
           tools: composer:v2
 
       - name: Cache Composer packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: vendor
           key: ${{ runner.os }}-php8.4-composer-${{ hashFiles('composer.lock') }}
