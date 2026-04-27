@@ -54,7 +54,11 @@ services:
     env_file:
       - ./.env
     volumes:
-      - db-data:/var/lib/postgresql/data
+      # Postgres 18 expects the volume at /var/lib/postgresql (parent of data
+      # subdir) so it can manage major-version subdirectories for pg_upgrade.
+      # Mounting at /var/lib/postgresql/data (the pre-18 convention) makes it
+      # refuse to start with a "boundary issues" error.
+      - db-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
