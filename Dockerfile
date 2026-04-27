@@ -8,13 +8,18 @@ WORKDIR /app
 
 # Copy only files needed to resolve + install dependencies.
 COPY composer.json composer.lock ./
+# The composer:2 builder image lacks the runtime PHP extensions (bcmath,
+# pcntl, etc.) — but those are present in the stage-2 runtime image. Skip
+# the local platform check so the install resolves against composer.lock
+# alone; the runtime stage validates again via package:discover.
 RUN composer install \
     --no-dev \
     --no-interaction \
     --no-progress \
     --no-scripts \
     --prefer-dist \
-    --optimize-autoloader
+    --optimize-autoloader \
+    --ignore-platform-reqs
 
 # ---------------------------------------------------------------------------
 # Stage 2 — runtime (php-fpm)
