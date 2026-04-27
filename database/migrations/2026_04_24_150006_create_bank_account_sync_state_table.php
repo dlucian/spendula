@@ -12,7 +12,7 @@ return new class extends Migration
             $table->foreignUuid('bank_account_id')->primary()->constrained('bank_accounts')->cascadeOnDelete();
             $table->timestampTz('last_successful_sync_at')->nullable();
             $table->date('last_fetched_through')->nullable();
-            $table->string('last_continuation_key')->nullable();
+            $table->text('last_continuation_key')->nullable();
             $table->timestampTz('last_sync_error_at')->nullable();
             $table->integer('consecutive_failure_count')->default(0);
             $table->timestamps();

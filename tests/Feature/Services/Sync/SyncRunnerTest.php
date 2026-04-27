@@ -85,11 +85,16 @@ class SyncRunnerTest extends TestCase
     {
         $account = $this->seedConnectionWithAccount('uid-eur');
 
+        // Realistic-shape EB continuation key: base64(json) + '.' + 64-char hex signature.
+        // Total ~350 chars — exceeds varchar(255), regression guard for the schema.
+        $longContinuationKey = base64_encode(str_repeat('paging-cursor-payload-', 12))
+            .'.'.str_repeat('a1b2c3d4', 8);
+
         Http::fake([
             'https://api.enablebanking.test/accounts/uid-eur/transactions*' => Http::sequence()
                 ->push([
                     'transactions' => [$this->eurTransaction('ref-page-1')],
-                    'continuation_key' => 'page-2-token',
+                    'continuation_key' => $longContinuationKey,
                 ], 200)
                 ->push([
                     'transactions' => [$this->eurTransaction('ref-page-2', bookingDate: '2026-04-16')],
