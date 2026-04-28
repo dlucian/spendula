@@ -14,6 +14,7 @@ use App\Services\EnableBanking\Exceptions\EnableBankingException;
 use App\Services\EnableBanking\Exceptions\InvalidCallbackStateException;
 use App\Services\EnableBanking\Exceptions\LocalConfigException;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -218,10 +219,19 @@ class CallbackHandler
             // Step 4: upsert every account inside the same transaction. A
             // RuntimeException here propagates out of the closure and rolls
             // back Steps 1–3 along with the partial accounts.
+            //
+            // GH issue #3: $touchedAccountIds is the per-callback "do not
+            // re-match into" set — defense in depth against any future
+            // hash-collision class. Even if Layer A's discriminating-hash
+            // filter let a weak hash through, two EB accounts in the same
+            // callback can never collapse into one DB row.
             $discovered = [];
+            $touchedAccountIds = [];
             foreach ($accounts as $account) {
                 try {
-                    $discovered[] = $this->upsertAccount($authRequest->bank_slug, $connection, $account);
+                    $bankAccount = $this->upsertAccount($authRequest->bank_slug, $connection, $account, $touchedAccountIds);
+                    $touchedAccountIds[$bankAccount->id] = true;
+                    $discovered[] = $bankAccount;
                 } catch (RuntimeException $e) {
                     Log::error('Enable Banking account upsert failed; rolling back callback.', [
                         'event' => 'callback.account_failed',
@@ -246,8 +256,11 @@ class CallbackHandler
         ];
     }
 
-    /** @param  array<string, mixed>  $account */
-    private function upsertAccount(string $bankSlug, BankConnection $connection, array $account): BankAccount
+    /**
+     * @param  array<string, mixed>  $account
+     * @param  array<string, bool>  $touchedAccountIds  bank_account ids already upserted in the current callback.
+     */
+    private function upsertAccount(string $bankSlug, BankConnection $connection, array $account, array $touchedAccountIds): BankAccount
     {
         $uid = isset($account['uid']) && is_string($account['uid']) ? $account['uid'] : '';
         if ($uid === '') {
@@ -272,11 +285,80 @@ class CallbackHandler
             throw new RuntimeException('Enable Banking account has no primary identification_hash — cannot proceed (SPEC §10.1).');
         }
 
-        $lookupHashes = array_values(array_unique(array_filter(array_merge([$primaryHash], $allHashes))));
-
+        // GH issue #3: matching is driven by the SPEC §10.1 primary
+        // identification_hash first. The earlier "match on any of the
+        // eight hashes EB returned" approach was order-dependent — a
+        // sibling whose secondaries overlap with another sibling's (e.g.
+        // Revolut LT returns the LT IBAN as account.account_id.iban for
+        // both EUR and RON accounts) could bind into the wrong row
+        // depending on which Eloquent row `first()` returned.
+        //
+        // `is_primary = true` is required: if a hash is currently stored
+        // as a sibling's *secondary*, EB promoting it to be that
+        // sibling's new primary must NOT silently rebind us to the wrong
+        // row. The fallback below handles legitimate rotations.
+        //
+        // The whereNotIn clause is the per-callback defense in depth: two
+        // EB accounts in one consent can never collapse into one DB row,
+        // even if a future EB change happens to ship colliding primaries.
         $existing = BankAccountIdentifier::query()
-            ->whereIn('hash', $lookupHashes)
+            ->where('hash', $primaryHash)
+            ->where('is_primary', true)
+            ->whereNotIn('bank_account_id', array_keys($touchedAccountIds))
             ->first();
+
+        // Secondary-hash fallback: if primary lookup missed, EB may have
+        // rotated the primary while keeping the old hash in
+        // identification_hashes (the IBAN-materialisation comment below
+        // already anticipates identity material evolving across re-
+        // consents).
+        //
+        // Reuse a candidate row only when it is "primary-backed": its
+        // CURRENT is_primary identifier is one of THIS EB account's
+        // allHashes. Otherwise the only overlap is a shared secondary
+        // (holder-name, shared IBAN tuple, etc.) which would silently
+        // rebind a brand-new sibling to an unrelated account. Without
+        // the primary-backed check, a count===1 fast path was wrong:
+        // if only ONE older sibling existed in the DB, every new
+        // sibling sharing a holder-name hash with it would be reused.
+        if ($existing === null && $allHashes !== []) {
+            $candidates = BankAccountIdentifier::query()
+                ->whereIn('hash', $allHashes)
+                ->whereNotIn('bank_account_id', array_keys($touchedAccountIds))
+                ->get();
+            /** @var Collection<int, string> $candidateIds */
+            $candidateIds = $candidates->pluck('bank_account_id')->unique()->values();
+
+            if ($candidateIds->isNotEmpty()) {
+                /** @var Collection<int, string> $preferredIds */
+                $preferredIds = BankAccountIdentifier::query()
+                    ->whereIn('bank_account_id', $candidateIds->all())
+                    ->where('is_primary', true)
+                    ->whereIn('hash', $allHashes)
+                    ->pluck('bank_account_id')
+                    ->unique()
+                    ->values();
+                if ($preferredIds->count() === 1) {
+                    $existing = $candidates->firstWhere('bank_account_id', $preferredIds->first());
+                } elseif ($preferredIds->count() > 1) {
+                    // GH issue #3: multiple primary-backed candidates.
+                    // Most realistic shape: a sibling has promoted a
+                    // formerly-shared hash to its primary AND the new EB
+                    // account's allHashes overlap with both that sibling
+                    // (via the promoted hash) and the "true" original row
+                    // (via its own former primary). The syncIdentifiers
+                    // secondary-skip tolerance would let us insert a
+                    // duplicate without surfacing the ambiguity, stranding
+                    // sync state and YNAB mappings on the wrong row.
+                    // Throw instead — operator must clean up the cross-
+                    // row identifiers manually before re-auth.
+                    throw new RuntimeException(
+                        'identification_hash lookup matched multiple primary-backed candidates ('.$preferredIds->implode(',').") — refusing to bind EB account uid={$uid} (SPEC §10.1, GH #3)."
+                    );
+                }
+                // 0 → only shared-secondary noise; fall through to insert.
+            }
+        }
 
         $currency = (string) ($account['currency'] ?? 'EUR');
         $baseCurrency = (string) config('spendula.base_currency', 'EUR');
@@ -293,6 +375,23 @@ class CallbackHandler
 
         if ($existing instanceof BankAccountIdentifier) {
             $bankAccount = BankAccount::query()->findOrFail($existing->bank_account_id);
+            // GH issue #3: refuse to overwrite the matched row's identity
+            // when its currency does not match the EB account's. This
+            // would happen if EB ever rotates a previously-shared
+            // secondary hash to be the *primary* on the OTHER sibling —
+            // the lookup binds to the wrong row, and silently
+            // overwriting last_seen_at/iban (and then sweeping
+            // identifiers in syncIdentifiers below) would route future
+            // sync/push work through a misidentified bank_account.
+            // Surfacing as a fatal RuntimeException (caught as 502 by
+            // the controller) is strictly better than silent corruption;
+            // operator can investigate and clean up the cross-row
+            // identifier manually.
+            if (strtoupper($bankAccount->currency) !== strtoupper($currency)) {
+                throw new RuntimeException(
+                    "identification_hash matched bank_account {$bankAccount->id} ({$bankAccount->currency}) but EB account uid={$uid} is {$currency} — refusing to overwrite identity (SPEC §10.1, GH #3)."
+                );
+            }
             $bankAccount->last_seen_at = $now;
             // IBAN may have materialised on a real bank after initial link against Mock — always refresh it.
             if ($iban !== null) {
@@ -352,9 +451,42 @@ class CallbackHandler
 
             if ($existing instanceof BankAccountIdentifier) {
                 if ($existing->bank_account_id !== $account->id) {
-                    throw new RuntimeException(
-                        "identification_hash collision: hash {$hash} already owned by another bank_account."
-                    );
+                    if ($hash === $primaryHash) {
+                        // A primary-hash collision against another account
+                        // is corruption — tolerating it would leave a row
+                        // with zero primary identifiers and break the SPEC
+                        // §10.1 "exactly one primary per account"
+                        // invariant. Throw rather than guess.
+                        //
+                        // This also surfaces the legacy GH #3 corrupted
+                        // state — a deployment that hit the bug before
+                        // this fix has multiple siblings' primaries parked
+                        // on a single row, and re-auth will throw here
+                        // when the second sibling tries to claim its
+                        // primary. Recovery from that state requires a
+                        // separate repair tool (out of scope for this PR).
+                        throw new RuntimeException(
+                            "identification_hash collision: hash {$hash} already owned by another bank_account."
+                        );
+                    }
+
+                    // Secondaries are persisted for fidelity to EB output
+                    // but no longer drive matching (see upsertAccount).
+                    // They can collide across accounts in two benign shapes:
+                    //   (a) Non-discriminating hashes (e.g. the
+                    //       [aspsp_name, aspsp_country, account.name]
+                    //       recipe) are intrinsically shared across an
+                    //       operator's accounts.
+                    //   (b) Discriminating-by-recipe hashes that EB
+                    //       happens to compute identically for sibling
+                    //       accounts (Revolut LT returns the LT IBAN as
+                    //       account.account_id.iban for both EUR and RON
+                    //       accounts).
+                    // Since primary lookup is the only thing that drives
+                    // matching, a secondary collision cannot misroute a
+                    // future re-auth — silently skip in either shape so
+                    // re-auths in arbitrary account order succeed.
+                    continue;
                 }
                 $existing->is_primary = ($hash === $primaryHash);
                 $existing->last_seen_at = $now;
