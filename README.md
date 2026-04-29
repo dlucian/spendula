@@ -139,8 +139,10 @@ Phase-1 (implemented):
 | Command | Purpose |
 |---|---|
 | `spendula:banks:sync` | Reconcile `banks` with `config/spendula-banks.php`. |
+| `spendula:banks:add` | Add an operator-only bank that should never appear in source (production targets, etc.). |
 | `spendula:auth:start {bank_slug}` | Start an EB consent flow; prints the URL to open. |
-| `spendula:accounts:seed-mock` | One-off phase-1 mapper: wire a bank account to a YNAB account. |
+| `spendula:accounts:map` | Interactive YNAB-account mapper; walks unmapped rows or maps a single one with `--bank-account-id` + `--ynab-account-id`. |
+| `spendula:accounts:seed-mock` | Scripted single-row mapper (still useful for tests / CI). |
 | `spendula:sync [--bank=slug]` | Pull new transactions from Enable Banking. |
 | `spendula:review [--bulk-approve-trivial]` | Terminal queue: Approve / Skip / Transfer. |
 | `spendula:push` | Send approved transactions to YNAB. |
@@ -149,7 +151,6 @@ Phase-2+ stubs (ship as "not yet implemented"):
 
 | Command | Phase |
 |---|---|
-| `spendula:accounts:map` | 2 (interactive mapping for real banks) |
 | `spendula:tracking:snapshot [--account=id]` | 3 (foreign-currency balance snapshots) |
 | `spendula:status` | 4 (dashboard) |
 | `spendula:convert-pending` | 4 (retry failed FX conversions) |

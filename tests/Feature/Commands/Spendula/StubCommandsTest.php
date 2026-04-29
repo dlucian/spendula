@@ -13,7 +13,6 @@ class StubCommandsTest extends TestCase
     public static function stubCommands(): array
     {
         return [
-            'spendula:accounts:map' => ['spendula:accounts:map'],
             'spendula:status' => ['spendula:status'],
             'spendula:convert-pending' => ['spendula:convert-pending'],
             'spendula:tracking:snapshot' => ['spendula:tracking:snapshot'],
