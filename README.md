@@ -60,6 +60,78 @@ php artisan serve
 
 The EB **sandbox** app is already configured with `http://localhost:8000/banking/callback` as an allowed redirect URL.
 
+### Local development against the **production** EB app
+
+The sandbox EB app accepts `http://localhost:8000/banking/callback`. The
+production app only accepts `https://…` redirect URLs, so working with real
+bank consents from your local machine needs HTTPS termination in front of
+`php artisan serve`. Recipe (assumes a Tailscale-joined macOS dev box;
+substitute your own tailnet hostname for `prod.spendula.example`):
+
+```bash
+# 1. Caddy with internal CA — terminates TLS, proxies to Laravel.
+brew install caddy
+cat > /opt/homebrew/etc/Caddyfile <<'EOF'
+{
+    auto_https disable_redirects
+}
+
+prod.spendula.example:8443 {
+    tls internal
+    reverse_proxy 127.0.0.1:8000
+}
+EOF
+
+# 2. /etc/hosts pin so the tailnet hostname resolves locally to 127.0.0.1.
+#    (Other tailnet peers still resolve to the real Tailscale IP.)
+echo '127.0.0.1 prod.spendula.example' | sudo tee -a /etc/hosts
+sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder
+
+# 3. Start Caddy and trust its local CA in the system keychain.
+sudo brew services start caddy
+sudo /opt/homebrew/opt/caddy/bin/caddy trust
+
+# 4. Verify (Laravel does NOT need to be running yet — expect 502 until it is).
+curl -sI https://prod.spendula.example:8443/
+```
+
+Port `:8443` (instead of `:443`) sidesteps a conflict with DDEV's traefik
+router, which holds `127.0.0.1:443` whenever any DDEV project is running.
+Most OAuth providers — Enable Banking included — accept non-default ports as
+long as the URL matches the registered redirect URL **exactly**.
+
+Then point `.env` at the production EB app:
+
+```bash
+APP_URL=https://prod.spendula.example:8443
+SPENDULA_CALLBACK_URL=https://prod.spendula.example:8443/banking/callback
+SPENDULA_ENABLE_BANKING_APP_ID=<production-app-id>
+SPENDULA_ENABLE_BANKING_ENV=production
+SPENDULA_ENABLE_BANKING_PRIVATE_KEY_PATH=storage/keys/enablebanking.key
+```
+
+Drop the production private key in at the configured path. To keep both
+sandbox and production keys around, stash the sandbox key as
+`storage/keys/enablebanking-sandbox.key` and copy whichever you want active
+to `storage/keys/enablebanking.key`. Run `php artisan config:clear` after
+any `.env` edit so the new value lands.
+
+Confirm credentials before the first auth flow:
+
+```bash
+php artisan tinker --execute="\
+  \$c = app(\App\Services\EnableBanking\Client::class); \
+  \$app = \$c->application(); \
+  echo \$app['name'].' / '.\$app['environment'].PHP_EOL;"
+# → Spendula / PRODUCTION
+```
+
+Register `https://prod.spendula.example:8443/banking/callback`
+as an allowed redirect URL in the EB production app dashboard, then run
+`php artisan spendula:auth:start <bank>` as usual. Heads up: EB consent
+sessions expire in under 10 minutes, so be ready to complete the consent
+in the browser straight away.
+
 ### Artisan commands
 
 Phase-1 (implemented):
