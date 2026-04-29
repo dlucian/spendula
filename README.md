@@ -191,6 +191,35 @@ Mock ASPSP ships with zero seeded accounts — create at least one at
 <https://enablebanking.com/cp/mock-aspsp> before step 2, or the consent flow
 will silently error (see `spike/FINDINGS.md` #1).
 
+### YNAB starting balance vs. import cutoff date
+
+**Read this before doing the first real-bank mapping.** YNAB's "Starting
+Balance" is a one-time transaction it auto-inserts when you create an
+account. After that, every imported transaction modifies the running
+total. If you enter **today's** bank balance as the starting balance AND
+Spendula then imports a month of historical transactions, YNAB
+double-counts:
+
+```text
+YNAB balance = (starting balance) + sum(imported transactions)
+```
+
+So pick the starting balance to align with the cutoff date:
+
+- **Backfilling history** (cutoff in the past, e.g. `2026-04-01`): set
+  YNAB's starting balance to the bank's balance **as of `cutoff_date − 1`**
+  (end-of-day 2026-03-31 in this example). Spendula's imports then move
+  the balance from that historical figure to today's actual balance, and
+  the math reconciles.
+- **No backfill** (cutoff = today): set YNAB's starting balance to
+  today's bank balance. You lose pre-today history but the balance stays
+  correct from now on.
+
+If you've already created the YNAB account with the wrong figure, edit
+the auto-generated "Starting Balance" transaction to the correct date
+and amount before running the first sync — YNAB recomputes the running
+total on save.
+
 ## Production
 
 Three-container Docker Compose stack (`app`, `web`, `db`) behind the host's existing Caddy instance, reverse-proxied from `spendula.example.com` → `127.0.0.1:8765`.
