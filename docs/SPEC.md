@@ -579,7 +579,9 @@ For each transaction, try in order and record which level succeeded in `counterp
 - **Level 1** — direction-inverted (covers banks that report incorrectly, notably Mock ASPSP and some RO banks):
   - `CRDT` → `creditor.name`
   - `DBIT` → `debtor.name`
-- **Level 2** — extract from `remittance_information[0]`, stripped of common banking prefixes (`PURCHASE `, `POS `, `CARD PAYMENT `, `SEPA DD `, etc.), truncated to 64 chars.
+- **Level 2** — extract a counterparty from `remittance_information[0]`, truncated to 64 chars. Two strategies are tried in order:
+  - **Structured CSV pattern** (ING RO Business and similar) — when the line looks like `Card number, **** XXXX, Transaction at, <MERCHANT>, Authorization date, …`, the merchant between `Transaction at, ` and `, Authorization date,` is pulled out directly.
+  - **Prefix + suffix stripping** — strips known banking prefixes (`PURCHASE `, `POS `, `CARD PAYMENT `, `SEPA DD `, `SEPA CT `, BCP's `COMPRA NNNN ` / `TRF DE / MB WAY P / P / P O ` / `DD ` / `PAGSERV `) and the trailing ` CONTACTLESS` suffix some banks append to card-purchase lines.
 - **Level 3** — fall back to `additional_information` if present.
 - **Level 4** — literal `"(Unknown)"`. Transaction is flagged with a warning icon in review CLI.
 

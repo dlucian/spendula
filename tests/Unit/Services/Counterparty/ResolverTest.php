@@ -80,6 +80,113 @@ class ResolverTest extends TestCase
         $this->assertSame(4, $resolved->level);
     }
 
+    public function test_level_2_strips_bcp_compra_card_number_prefix(): void
+    {
+        // BCP card-purchase remittance starts with "COMPRA NNNN " where
+        // NNNN is the last-4 of the card or a category code (9800, 5962).
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['COMPRA 9800 Vinted Vilnius LT'],
+        ]);
+
+        $this->assertSame('Vinted Vilnius LT', $resolved->name);
+        $this->assertSame(2, $resolved->level);
+    }
+
+    public function test_level_2_strips_bcp_compra_with_5962_prefix(): void
+    {
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['COMPRA 5962 CONTINENTE LISBOA PT'],
+        ]);
+
+        $this->assertSame('CONTINENTE LISBOA PT', $resolved->name);
+    }
+
+    public function test_level_2_strips_bcp_compra_and_contactless_suffix(): void
+    {
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['COMPRA 9800 MACAS DE ADAO LISBOA PT CONTACTLESS'],
+        ]);
+
+        $this->assertSame('MACAS DE ADAO LISBOA PT', $resolved->name);
+    }
+
+    public function test_level_2_strips_bcp_trf_de(): void
+    {
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'CRDT',
+            'remittance_information' => ['TRF DE Apparte - Emergency fund'],
+        ]);
+
+        $this->assertSame('Apparte - Emergency fund', $resolved->name);
+    }
+
+    public function test_level_2_strips_bcp_trf_mb_way_double_space(): void
+    {
+        // Observed double-space after the "P" in real BCP remittance.
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['TRF MB WAY P  SONAM MALLA'],
+        ]);
+
+        $this->assertSame('SONAM MALLA', $resolved->name);
+    }
+
+    public function test_level_2_strips_bcp_trf_p_o(): void
+    {
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['TRF. P O NIKOLAY SAVCHENKO'],
+        ]);
+
+        $this->assertSame('NIKOLAY SAVCHENKO', $resolved->name);
+    }
+
+    public function test_level_2_strips_bcp_dd_prefix(): void
+    {
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['DD EDP COMERCIAL  16'],
+        ]);
+
+        $this->assertSame('EDP COMERCIAL  16', $resolved->name);
+    }
+
+    public function test_level_2_extracts_merchant_from_ing_structured_remittance(): void
+    {
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['Card number, **** 0429, Transaction at, GITHUB, INC.  US  GITHUB.COM, Authorization date, 24-04-2026, Authorization number, 071280, Amount, 4,00  USD, Settlement amount, 3,43 EUR'],
+        ]);
+
+        $this->assertSame('GITHUB, INC.  US  GITHUB.COM', $resolved->name);
+        $this->assertSame(2, $resolved->level);
+    }
+
+    public function test_level_2_ing_structured_without_authorization_date_uses_eol(): void
+    {
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['Card number, **** 0429, Transaction at, ELEVENLABS.IO  US  ELEVENLABS.IO'],
+        ]);
+
+        $this->assertSame('ELEVENLABS.IO  US  ELEVENLABS.IO', $resolved->name);
+    }
+
+    public function test_level_2_falls_through_to_plain_remittance_when_unstructured(): void
+    {
+        // Revolut shape: short, no banking prefix.
+        $resolved = (new Resolver)->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'remittance_information' => ['www.kiwi.com*BRNO'],
+        ]);
+
+        $this->assertSame('www.kiwi.com*BRNO', $resolved->name);
+        $this->assertSame(2, $resolved->level);
+    }
+
     public function test_normalize_lowercases_strips_non_alphanumerics_and_collapses_whitespace(): void
     {
         $this->assertSame('pingo doce areeiro', Resolver::normalize('PINGO-DOCE Areeiro!!'));

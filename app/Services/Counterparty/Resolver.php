@@ -9,19 +9,59 @@ namespace App\Services\Counterparty;
 class Resolver
 {
     /**
-     * Banking prefixes that pollute remittance_information[0] on many RO banks
-     * and on some Western European banks. Stripped greedily (first match wins).
-     * Order matters — longer prefixes first so "CARD PAYMENT " doesn't get
-     * trimmed to just "CARD ".
+     * Banking prefixes that pollute remittance_information[0]. Stripped
+     * greedily (first match wins). Order matters — longer / more specific
+     * patterns first so "CARD PAYMENT " doesn't get trimmed to just
+     * "CARD ", and so "TRF MB WAY P  " doesn't get trimmed to just "TRF ".
+     *
+     * Each entry is a regex anchored at the start (case-insensitive). The
+     * static prefixes use literal matches; the BCP-specific COMPRA/TRF
+     * entries handle Portuguese banking patterns observed in real
+     * production data (4-digit card-number prefix, transfer-to-person
+     * variants, etc.).
      */
-    private const array REMITTANCE_PREFIXES = [
-        'CARD PAYMENT ',
-        'POS PURCHASE ',
-        'PURCHASE ',
-        'SEPA DD ',
-        'SEPA CT ',
-        'POS ',
+    private const array REMITTANCE_PREFIX_PATTERNS = [
+        // Generic English (existing):
+        '/^CARD PAYMENT\s+/i',
+        '/^POS PURCHASE\s+/i',
+        '/^PURCHASE\s+/i',
+        '/^SEPA DD\s+/i',
+        '/^SEPA CT\s+/i',
+        '/^POS\s+/i',
+        // BCP card-purchase prefix: `COMPRA NNNN ` where NNNN is the last 4
+        // of the card or a merchant-category code (observed: 9800, 5962).
+        '/^COMPRA\s+\d{3,5}\s+/i',
+        // BCP transfer-to-person variants:
+        //   "TRF DE <name>"            (TRANSFER FROM)
+        //   "TRF MB WAY P  <name>"     (MB WAY = Portuguese mobile pay; double space observed)
+        //   "TRF P  <name>", "TRF P <name>"
+        //   "TRF. P O <name>", "TRF. P  <name>"
+        '/^TRF\.?\s+(DE|MB\s+WAY\s+P|P\s+O|P)\s+/i',
+        // BCP direct debit:
+        '/^DD\s+/i',
+        // BCP service payment:
+        '/^PAGSERV\s+/i',
     ];
+
+    /**
+     * Suffixes appended by some banks to card-purchase remittance lines
+     * (BCP especially). Stripped after prefix removal. Conservative —
+     * only strings that appear consistently in observed data, never
+     * a bare 2-letter country code (too risky to mangle merchant names).
+     */
+    private const array REMITTANCE_SUFFIX_PATTERNS = [
+        '/\s+CONTACTLESS\s*$/i',
+    ];
+
+    /**
+     * ING RO Business and similar banks return a structured CSV-like
+     * remittance:
+     *   "Card number, **** XXXX, Transaction at, MERCHANT, Authorization date, …"
+     * Extract the merchant directly so we don't ship the whole metadata
+     * blob into YNAB as a payee name.
+     */
+    private const string ING_STRUCTURED_PATTERN =
+        '/^Card number,\s*\*+\s*\d+,\s*Transaction at,\s*(?P<merchant>.+?)(?=,\s*Authorization date,|$)/iu';
 
     /**
      * @param  array<string, mixed>  $transaction
@@ -55,13 +95,16 @@ class Resolver
             return new ResolvedCounterparty($inverted, 1);
         }
 
-        // Level 2: remittance_information[0] stripped of common banking prefixes, truncated to 64.
+        // Level 2: extract a clean counterparty from remittance_information[0].
+        // Tried in order: structured-CSV extraction (ING RO et al.) first,
+        // then prefix + suffix stripping (BCP, generic patterns).
         if (isset($transaction['remittance_information']) && is_array($transaction['remittance_information'])) {
             $first = $transaction['remittance_information'][0] ?? null;
             if (is_string($first) && trim($first) !== '') {
-                $stripped = $this->stripPrefixes($first);
-                if ($stripped !== '') {
-                    return new ResolvedCounterparty(mb_substr($stripped, 0, 64), 2);
+                $extracted = $this->extractFromStructured($first) ?? $this->stripPrefixes($first);
+                $extracted = $this->stripSuffixes($extracted);
+                if ($extracted !== '') {
+                    return new ResolvedCounterparty(mb_substr($extracted, 0, 64), 2);
                 }
             }
         }
@@ -115,13 +158,42 @@ class Resolver
 
     private function stripPrefixes(string $text): string
     {
-        $upper = strtoupper($text);
-        foreach (self::REMITTANCE_PREFIXES as $prefix) {
-            if (str_starts_with($upper, $prefix)) {
-                return trim(substr($text, strlen($prefix)));
+        foreach (self::REMITTANCE_PREFIX_PATTERNS as $pattern) {
+            $stripped = preg_replace($pattern, '', $text, 1);
+            if (is_string($stripped) && $stripped !== $text) {
+                return trim($stripped);
             }
         }
 
         return trim($text);
+    }
+
+    private function stripSuffixes(string $text): string
+    {
+        foreach (self::REMITTANCE_SUFFIX_PATTERNS as $pattern) {
+            $stripped = preg_replace($pattern, '', $text, 1);
+            if (is_string($stripped) && $stripped !== $text) {
+                $text = $stripped;
+            }
+        }
+
+        return trim($text);
+    }
+
+    /**
+     * Pull the merchant out of an ING RO Business "Card number, …,
+     * Transaction at, MERCHANT, Authorization date, …" line. Returns
+     * null if the pattern doesn't match or the merchant capture is
+     * empty.
+     */
+    private function extractFromStructured(string $text): ?string
+    {
+        if (preg_match(self::ING_STRUCTURED_PATTERN, $text, $m) === 1) {
+            $merchant = trim($m['merchant']);
+
+            return $merchant !== '' ? $merchant : null;
+        }
+
+        return null;
     }
 }
