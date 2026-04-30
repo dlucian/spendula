@@ -4,9 +4,12 @@ namespace App\Providers;
 
 use App\Services\EnableBanking\Client as EnableBankingClient;
 use App\Services\EnableBanking\Jwt as EnableBankingJwt;
+use App\Services\ExchangeRates\FrankfurterClient;
+use App\Services\ExchangeRates\RateProvider;
 use App\Services\Ynab\Client as YnabClient;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
+use RuntimeException;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -23,6 +26,18 @@ class AppServiceProvider extends ServiceProvider
         );
 
         $this->app->singleton(YnabClient::class, fn () => YnabClient::fromConfig());
+
+        $this->app->singleton(RateProvider::class, function (Application $app): RateProvider {
+            $provider = (string) config('spendula.exchange_rates.provider');
+            $baseUrl = (string) config('spendula.exchange_rates.base_url');
+
+            return match ($provider) {
+                'frankfurter' => new FrankfurterClient($baseUrl),
+                default => throw new RuntimeException(
+                    "Unknown exchange rate provider [{$provider}]. Set SPENDULA_EXCHANGE_RATE_PROVIDER to a supported value (currently: frankfurter)."
+                ),
+            };
+        });
     }
 
     public function boot(): void

@@ -22,6 +22,7 @@ return [
 
     'exchange_rates' => [
         'provider' => env('SPENDULA_EXCHANGE_RATE_PROVIDER', 'frankfurter'),
+        'base_url' => env('SPENDULA_EXCHANGE_RATE_BASE_URL', 'https://api.frankfurter.dev/v1'),
     ],
 
 ];
