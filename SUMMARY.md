@@ -1,111 +1,114 @@
 # Latest task summary
 
-## GH issue #8 — Phase 3a: Frankfurter exchange-rate client (SPEC §5.5)
+## GH issue #9 — Phase 3b: tracking-sync path (status tracking, bypass review/push)
 
 ### What changed
 
-- `app/Services/ExchangeRates/RateProvider.php` — new interface with one
-  method `getRate(string $base, string $quote, CarbonInterface $date): Rate`.
-  Defines the seam for the eventual `tracking:snapshot` consumer in
-  phase 3c. Behaviour contract documented in the interface docblock
-  (success, failure modes, and the implicit weekend roll-back).
-- `app/Services/ExchangeRates/Rate.php` — `final readonly` value object
-  carrying `base`, `quote`, `rateDate` (CarbonImmutable, normalised to
-  start-of-day), `rate` (string, full precision for bcmath), `source`.
-- `app/Services/ExchangeRates/FrankfurterClient.php` — only
-  `RateProvider` impl today. Endpoint shape verified live against
-  `api.frankfurter.dev`: `GET /{YYYY-MM-DD}?base={X}&symbols={Y}` →
-  `{"date": "...", "rates": {"Y": <number>}}`. Uses the existing
-  `exchange_rates` table as cache. Lookup is bounded: business-day
-  requests need an exact `rate_date` match, while weekend requests
-  fall back to the most recent rate_date within 2 days. This stops a
-  cached Friday row from indefinitely pinning later weekday lookups
-  (Tuesday must fetch Tuesday, not serve Friday). Weekday holidays
-  miss → fetch → Frankfurter rolls back → unique-constraint absorbs
-  the duplicate insert. 5xx retry ladder mirrors
-  `Ynab\Client::RETRY_DELAYS_MS_5XX` (`[2_000, 8_000]` ms). Concurrent
-  inserts collide on the `(base_currency, quote_currency, rate_date,
-  source)` unique constraint; the loser catches the Postgres `23505`
-  and continues with the in-memory `Rate`.
-- `app/Services/ExchangeRates/Exceptions/{ExchangeRateException,
-  ExchangeRateProviderUnreachableException,
-  ExchangeRateUnavailableException}.php` — typed exception ladder
-  matching the Ynab/EnableBanking client patterns. Unreachable =
-  transport failure or non-2xx after retries (SPEC §5.5 hard fail);
-  unavailable = 200 with malformed body (defensive, surface rather
-  than coerce).
-- `app/Providers/AppServiceProvider.php` — singleton binding of
-  `RateProvider::class` resolved off `config('spendula.exchange_rates.provider')`.
-  Today only `frankfurter` is recognised; unknown values throw
-  `RuntimeException` with operator-actionable copy.
-- `config/spendula.php` — added `exchange_rates.base_url`
-  (default `https://api.frankfurter.dev/v1`) so tests can swap host
-  without monkey-patching the client.
-- `.env.example` — added commented `SPENDULA_EXCHANGE_RATE_BASE_URL`
-  example so operators discover the override exists.
-- `tests/Feature/Services/ExchangeRates/FrankfurterClientTest.php` —
-  eight tests covering: happy path, cache hit (one HTTP call across
-  two `getRate` calls), weekend fallback (Saturday request resolves
-  to Friday's `rate_date`; subsequent Saturday call hits cache via the
-  `<=` lookup), 5xx-after-retries → unreachable, transport failure →
-  unreachable, malformed 200 → unavailable, unknown-provider config
-  throws on resolve, default config wires `FrankfurterClient`.
+- `app/Services/Sync/MatchUpdateOrInsert.php` — `insert()` now branches
+  status assignment in three steps: cutoff first (pre-cutoff →
+  `skipped`), then `ynab_account_type === Tracking` (→ `tracking`,
+  terminal), default (→ `fetched`). Class-level docblock updated to
+  describe the new branch and reference SPEC §5.3 / §6.5.
+- `app/Services/Sync/SyncRunner.php` — `syncConnection()` now skips
+  only `ynab_account_type IS NULL` accounts. Previously skipped
+  `Tracking`; this gate change is the prerequisite that lets tracking
+  rows ever reach `MatchUpdateOrInsert`. Inline comment rewritten;
+  unused `YnabAccountType` import removed.
+- `app/Services/Sync/DECISIONS.md` — **new file**. Records (1) cutoff
+  precedes the tracking branch, (2) drift on tracking rows uses the
+  post-fetched log+Deduped path because tracking is terminal, and
+  (3) review/push exclusion of tracking rows is structural via
+  existing `status` filters, not a redundant `!= tracking` clause.
+- `tests/Feature/Services/Sync/MatchUpdateOrInsertTest.php` — three
+  new tests:
+  - `test_tracking_account_post_cutoff_lands_as_status_tracking`
+  - `test_tracking_account_pre_cutoff_still_lands_as_skipped`
+    (cutoff wins)
+  - `test_resync_of_tracking_row_preserves_status_tracking`
+    (immutable status across re-sync)
+- `tests/Feature/Services/Sync/SyncRunnerTest.php` — new
+  `test_tracking_mapped_account_lands_transactions_with_status_tracking`
+  exercises the end-to-end `spendula:sync` path against a tracking
+  account fixture and confirms the gate change.
+- `tests/Feature/Services/Review/ReviewSessionTest.php` — **new
+  file**. One test: queue excludes `status = tracking` rows even
+  when seeded alongside a fetched row on the same on-budget account.
+  Uses the non-TTY branch's `{N} transaction(s) awaiting review`
+  warning to assert the queue size structurally.
+- `tests/Feature/Services/Push/PushRunnerTest.php` — new
+  `test_tracking_status_rows_are_excluded_from_push` complements the
+  existing `test_tracking_accounts_are_skipped` (account-level
+  filter) by exercising the status-level filter.
 
 ### Assumptions made
 
-- **Frankfurter URL/response shape from live probe.** The original
-  issue body suggested `?from=X&to=Y`; live `curl` against
-  `api.frankfurter.dev` confirmed the correct query is
-  `?base=X&symbols=Y` with response `{"amount":1.0,"base":...,
-  "date":"YYYY-MM-DD","rates":{"Y":<number>}}`. Codified this shape in
-  `FrankfurterClient::decode()` and the test fixtures.
-- **Cache fallback gated on weekend-or-not.** A repeated weekend
-  request returns the same earlier-business-day rate without
-  re-probing (gap up to 2 days). Business-day misses always fetch.
-  ECB-observed weekday holidays therefore cost one extra HTTP per
-  unique date, but the unique constraint absorbs the resulting
-  duplicate insert when Frankfurter rolls back to a date already in
-  cache. See Open threads.
-- **Decimal(18,8) round-trips Frankfurter's 5-decimal rates as
-  `0.19641000`.** Tests cache-hit equality via `bccomp(.., 8)` rather
-  than string equality so the storage canonicalisation is asserted
-  honestly.
-- **No advisory lock for concurrent fetch.** Two concurrent missers
-  both fetch and the second insert hits the unique constraint;
-  caught and swallowed, the in-memory `Rate` returned anyway. Acceptable
-  because exchange rates are operationally idempotent and `tracking:snapshot`
-  is single-shot.
-- **YNAB / Enable Banking flows untouched.** No callers wired yet —
-  this is the seam, not the consumer.
+- **Cutoff-wins ordering** mirrors SPEC §6.5: pre-cutoff history is
+  uniformly `skipped` regardless of account purpose. A tracking
+  account's `import_cutoff_date` is therefore the same kind of
+  historical-noise boundary it is for on_budget accounts; the
+  snapshot path (phase 3c) consumes only post-cutoff `tracking` rows.
+- **Tracking accounts now actually flow through `SyncRunner`.** The
+  previous gate (`!== OnBudget`) was a phase-1 placeholder; the issue
+  body assumed only `MatchUpdateOrInsert` had to change, but the
+  runner gate had to relax in tandem. The unmapped-account case
+  (`ynab_account_type IS NULL`) stays excluded for the same reason
+  as before — no `import_cutoff_date`, plus the
+  `bank_accounts_currency_mapping_check` constraint.
+- **Drift on `status = tracking` rows uses the same log+Deduped path
+  as approved/pushed/skipped/transfer.** Hard-failing on a tracking
+  row would stall every sync, and the operator can't act on it
+  (tracking rows never reach review). Recorded in
+  `app/Services/Sync/DECISIONS.md`.
+- **Review/push exclusion is structural.** No new filters added —
+  `ReviewSession::run()`'s `status = fetched` filter and
+  `PushRunner::runLocked()`'s `status IN (approved, transfer)` +
+  `ynab_account_type = on_budget` join already exclude tracking
+  rows. The two new regression tests guard that structural exclusion
+  against accidental relaxation.
+- **No foreign-currency conversion at sync time.** Per SPEC §5.3 +
+  §5.6, conversion happens at snapshot time (phase 3c); the sync row
+  is stored at native currency.
+- **Counterparty resolver still runs** on tracking rows so the
+  operator can query historical foreign-currency transactions per
+  SPEC §5.3 step 2 — no resolver changes.
+- **No new YnabAccountType branches.** The enum has exactly two
+  cases; the new conditional in `MatchUpdateOrInsert::insert()`
+  handles the current branches and uses a `default` fallback to
+  `fetched`. A future third case would require reviewing that
+  conditional — recorded in the decision log.
 - Tests run against Postgres via `RefreshDatabase`. Postgres session
-  timezone was UTC for the test run (default config).
+  timezone was UTC for the test run (default config). 145 / 145
+  feature+unit tests pass; PHPStan level 8 clean; Pint clean.
 
 ### Blast radius
 
-- Adds three classes under a new namespace and one service binding.
-  No existing call sites changed.
-- Future consumer (`tracking:snapshot` in #3c) will type-hint
-  `RateProvider` and pick up `FrankfurterClient` automatically. If a
-  second provider is later added, only `AppServiceProvider`'s `match`
-  expands.
-- The `exchange_rates` table is now actually written to. Until #3c
-  lands, only the test suite exercises this path in production.
+- **Sync now writes to previously-unsynced tracking-mapped accounts.**
+  Operators with already-mapped tracking accounts will see new rows
+  appear in the `transactions` table on their next `spendula:sync`
+  run, all with `status = tracking`. Those rows are invisible to
+  review (`status = fetched` filter) and push
+  (`status IN (approved, transfer)` filter, plus the bank-account
+  `ynab_account_type = on_budget` join), so the existing operator
+  workflow is unaffected.
+- **No on-budget regression.** All existing on_budget sync, review,
+  and push tests continue to pass; the new `match (true)` branch
+  preserves the `Skipped`/`Fetched` outcomes for them.
+- **`SyncRunner` gate relaxation accepts tracking accounts.** The
+  unmapped-account case stays excluded; the test
+  `test_pre_cutoff_transactions_are_skipped_and_never_enter_review_queue`
+  confirms that pre-cutoff transactions are skipped and never enter
+  the review queue. The new
+  `test_tracking_accounts_still_skip_pre_cutoff_transactions_and_track_post_cutoff_transactions`
+  test specifically locks in cutoff precedence on tracking accounts.
 
 ### Open threads
 
-- **Conversion helper / `tracking:snapshot` integration** lives in
-  phase 3c. The interface signature is provisional until a second
-  caller exists.
-- **Cache-fallback policy is heuristic.** The weekend gate covers
-  Saturday/Sunday cleanly but treats ECB-observed weekday holidays
-  (Easter Monday, Christmas, etc.) as cache misses, costing one extra
-  HTTP per unique date. Re-running a snapshot the same day will
-  reuse a rate even if Frankfurter has since published a fresher one.
-  If the operator ever wants forced refresh, add a flag to
-  `RateProvider::getRate` (or a parallel `forceFetch` method).
-- **`decimal(18,8)` truncation** for any future provider with 8+
-  decimal precision. Not blocking; flagged for the second-provider PR.
-- **No second `RateProvider` impl yet.** The interface seam is real
-  but unproven. If a future provider needs more than `(base, quote,
-  date)` (e.g. configuration blob, auth token), the interface
-  signature changes — accepted risk to avoid speculative design.
+- **Phase 3c — `tracking:snapshot` consumer.** The actual reader of
+  `status = tracking` rows lives in #3c. Today they accumulate
+  silently; that's expected.
+- **Foreign-currency conversion at snapshot time** is explicitly out
+  of scope here per SPEC §5.3 / §5.6. Conversion uses
+  `app/Services/ExchangeRates/RateProvider` (delivered in phase 3a).
+- **Drift handling on tracking rows is best-effort.** If snapshot
+  reconciliation later needs stricter handling (e.g. recompute on
+  drift), it lives in the consumer, not in `MatchUpdateOrInsert`.

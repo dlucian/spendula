@@ -4,6 +4,7 @@ namespace App\Services\Sync;
 
 use App\Enums\CreditDebitIndicator;
 use App\Enums\TransactionStatus;
+use App\Enums\YnabAccountType;
 use App\Models\BankAccount;
 use App\Models\Transaction;
 use App\Services\Counterparty\Resolver;
@@ -28,6 +29,13 @@ use InvalidArgumentException;
  * currency, credit_debit_indicator, booking_date, dedup_hash, occurrence.
  * Fields that ARE updated from later syncs: counterparty_name/level,
  * remittance_information, value_date, raw_payload, last_updated_from_bank_at.
+ *
+ * Status assignment on insert (SPEC §5.3, §6.5): cutoff is checked first —
+ * pre-cutoff transactions land as `skipped` regardless of account type, per
+ * §6.5's "before import_cutoff_date → skipped, never reviewed". Post-cutoff,
+ * the account's ynab_account_type drives the branch: `tracking` accounts
+ * land as `tracking` (terminal — never reviewed, never pushed; consumed by
+ * the snapshot path), everything else lands as `fetched`.
  */
 class MatchUpdateOrInsert
 {
@@ -208,7 +216,11 @@ class MatchUpdateOrInsert
     private function insert(ParsedIncomingTransaction $parsed, int $occurrence): ApplyResult
     {
         $beforeCutoff = $this->isBeforeCutoff($parsed);
-        $status = $beforeCutoff ? TransactionStatus::Skipped : TransactionStatus::Fetched;
+        $status = match (true) {
+            $beforeCutoff => TransactionStatus::Skipped,
+            $parsed->account->ynab_account_type === YnabAccountType::Tracking => TransactionStatus::Tracking,
+            default => TransactionStatus::Fetched,
+        };
 
         $transaction = Transaction::query()->create([
             'bank_account_id' => $parsed->account->id,

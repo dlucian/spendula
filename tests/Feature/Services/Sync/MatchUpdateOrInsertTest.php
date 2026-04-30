@@ -4,6 +4,7 @@ namespace Tests\Feature\Services\Sync;
 
 use App\Enums\CreditDebitIndicator;
 use App\Enums\TransactionStatus;
+use App\Enums\YnabAccountType;
 use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\Transaction;
@@ -202,6 +203,74 @@ class MatchUpdateOrInsertTest extends TestCase
 
         $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
         $this->assertNull($result->transaction->skipped_at);
+    }
+
+    public function test_tracking_account_post_cutoff_lands_as_status_tracking(): void
+    {
+        $this->account->ynab_account_type = YnabAccountType::Tracking;
+        $this->account->import_cutoff_date = Carbon::parse('2026-04-01');
+        $this->account->save();
+
+        $result = $this->apply->apply(
+            $this->account->refresh(),
+            $this->sampleTransaction(['booking_date' => '2026-04-15']),
+        );
+
+        $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
+        $this->assertSame(TransactionStatus::Tracking, $result->transaction->status);
+        $this->assertNull($result->transaction->skipped_at);
+        $this->assertNull($result->transaction->skip_reason);
+    }
+
+    public function test_tracking_account_pre_cutoff_still_lands_as_skipped(): void
+    {
+        // Cutoff precedes the tracking branch (SPEC §6.5): pre-cutoff history
+        // is dropped uniformly across on_budget and tracking accounts.
+        $this->account->ynab_account_type = YnabAccountType::Tracking;
+        $this->account->import_cutoff_date = Carbon::parse('2026-04-01');
+        $this->account->save();
+
+        $result = $this->apply->apply(
+            $this->account->refresh(),
+            $this->sampleTransaction(['booking_date' => '2026-03-15']),
+        );
+
+        $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
+        $this->assertSame(TransactionStatus::Skipped, $result->transaction->status);
+        $this->assertSame('before import cutoff', $result->transaction->skip_reason);
+        $this->assertNotNull($result->transaction->skipped_at);
+    }
+
+    public function test_resync_of_tracking_row_preserves_status_tracking(): void
+    {
+        $this->account->ynab_account_type = YnabAccountType::Tracking;
+        $this->account->import_cutoff_date = Carbon::parse('2026-04-01');
+        $this->account->save();
+
+        $first = $this->apply->apply(
+            $this->account->refresh(),
+            $this->sampleTransaction(['booking_date' => '2026-04-15']),
+        );
+        $this->assertSame(TransactionStatus::Tracking, $first->transaction->status);
+
+        // Re-sync with a metadata-only change (remittance) so the update
+        // branch is exercised but the immutable status is preserved.
+        $second = $this->apply->apply(
+            $this->account->refresh(),
+            $this->sampleTransaction([
+                'booking_date' => '2026-04-15',
+                'remittance_information' => ['CARD PAYMENT PINGO DOCE AREEIRO · later detail'],
+            ]),
+        );
+
+        $this->assertSame(ApplyOutcome::Updated, $second->outcome);
+        $this->assertSame($first->transaction->id, $second->transaction->id);
+        $this->assertSame(
+            'CARD PAYMENT PINGO DOCE AREEIRO · later detail',
+            $second->transaction->refresh()->remittance_information,
+        );
+        $this->assertSame(TransactionStatus::Tracking, $second->transaction->refresh()->status);
+        $this->assertSame(1, Transaction::query()->count());
     }
 
     public function test_mock_aspsp_inversion_resolves_at_level_1(): void

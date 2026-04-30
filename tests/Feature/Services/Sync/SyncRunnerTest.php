@@ -183,6 +183,55 @@ class SyncRunnerTest extends TestCase
         $this->assertSame(BankConnectionStatus::Revoked, $connection->status);
     }
 
+    public function test_tracking_mapped_account_lands_transactions_with_status_tracking(): void
+    {
+        $account = $this->seedConnectionWithAccount('uid-trk');
+        $account->ynab_account_type = YnabAccountType::Tracking;
+        $account->import_cutoff_date = Carbon::parse('2026-01-01');
+        $account->save();
+
+        Http::fake([
+            'https://api.enablebanking.test/accounts/uid-trk/transactions*' => Http::response([
+                'transactions' => [
+                    $this->eurTransaction('ref-trk-1', bookingDate: '2026-04-20'),
+                    $this->eurTransaction('ref-trk-2', '5.00', 'CRDT', 'Interest', bookingDate: '2026-04-21'),
+                ],
+                'continuation_key' => null,
+            ], 200),
+        ]);
+
+        $this->artisan('spendula:sync')->assertSuccessful();
+
+        $this->assertSame(2, Transaction::query()->count());
+        $this->assertSame(2, Transaction::query()->where('status', TransactionStatus::Tracking->value)->count());
+        $this->assertSame(0, Transaction::query()->where('status', TransactionStatus::Fetched->value)->count());
+    }
+
+    public function test_tracking_accounts_still_skip_pre_cutoff_transactions_and_track_post_cutoff_transactions(): void
+    {
+        $account = $this->seedConnectionWithAccount('uid-trk-cutoff');
+        $account->ynab_account_type = YnabAccountType::Tracking;
+        $account->import_cutoff_date = Carbon::parse('2026-04-10');
+        $account->save();
+
+        Http::fake([
+            'https://api.enablebanking.test/accounts/uid-trk-cutoff/transactions*' => Http::response([
+                'transactions' => [
+                    $this->eurTransaction('ref-trk-old', '3.00', 'DBIT', 'Old Coffee', bookingDate: '2026-03-01'),
+                    $this->eurTransaction('ref-trk-new', '4.00', 'DBIT', 'New Coffee', bookingDate: '2026-04-20'),
+                ],
+                'continuation_key' => null,
+            ], 200),
+        ]);
+
+        $this->artisan('spendula:sync')->assertSuccessful();
+
+        $this->assertSame(2, Transaction::query()->count());
+        $this->assertSame(1, Transaction::query()->where('status', TransactionStatus::Skipped->value)->count());
+        $this->assertSame(1, Transaction::query()->where('status', TransactionStatus::Tracking->value)->count());
+        $this->assertSame(0, Transaction::query()->where('status', TransactionStatus::Fetched->value)->count());
+    }
+
     public function test_pre_cutoff_transactions_are_skipped_and_never_enter_review_queue(): void
     {
         $account = $this->seedConnectionWithAccount('uid-eur');

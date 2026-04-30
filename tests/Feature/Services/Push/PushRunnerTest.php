@@ -184,6 +184,22 @@ class PushRunnerTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_tracking_status_rows_are_excluded_from_push(): void
+    {
+        // Defensive complement to test_tracking_accounts_are_skipped: even if
+        // a tracking-status row somehow lands on an on_budget account, the
+        // status filter (Approved/Transfer only) keeps it out of the push.
+        $this->seedApproved('ref-1', -3450, 'Pingo Doce', status: TransactionStatus::Tracking);
+
+        Http::fake([
+            'https://api.ynab.test/v1/plans/plan-under-test/transactions' => Http::response([], 201),
+        ]);
+
+        $this->artisan('spendula:push')->assertSuccessful();
+
+        Http::assertNothingSent();
+    }
+
     public function test_validation_error_leaves_transactions_approved_and_logs(): void
     {
         $this->seedApproved('ref-1', -3450, 'Pingo Doce');

@@ -4,7 +4,6 @@ namespace App\Services\Sync;
 
 use App\Enums\BankConnectionStatus;
 use App\Enums\SyncErrorType;
-use App\Enums\YnabAccountType;
 use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\BankAccountSession;
@@ -38,8 +37,9 @@ use Throwable;
  * connection, 429 and 5xx abort this account cleanly and continue with
  * the next.
  *
- * Tracking accounts are explicitly out of scope in phase 1 (they use
- * balance snapshots in phase 3); this runner skips them.
+ * Tracking accounts flow through this runner alongside on_budget accounts;
+ * MatchUpdateOrInsert assigns them `status = tracking` so review and push
+ * skip them while the snapshot path (phase 3c) consumes them.
  */
 class SyncRunner
 {
@@ -155,14 +155,15 @@ class SyncRunner
                 continue;
             }
 
-            // Sync only mapped on_budget accounts:
-            //   * ynab_account_type IS NULL — discovered via the callback but
-            //     not yet run through `spendula:accounts:seed-mock`/map. Importing
-            //     pre-mapping ingests history before import_cutoff_date can be
-            //     set, and any account later mapped as `tracking` is left with
-            //     fetched rows that review/push can't process.
-            //   * ynab_account_type === Tracking — uses balance snapshots (phase 3).
-            if ($account->ynab_account_type !== YnabAccountType::OnBudget) {
+            // Skip only unmapped accounts (ynab_account_type IS NULL): those
+            // were discovered via the callback but never run through
+            // `spendula:accounts:seed-mock`/map, so they have no
+            // import_cutoff_date and ingesting them would pull unbounded
+            // history. Both OnBudget and Tracking accounts flow through —
+            // MatchUpdateOrInsert branches on the account type to land
+            // tracking-account rows as `status = tracking` (terminal, never
+            // reviewed/pushed; consumed by the phase 3c snapshot path).
+            if ($account->ynab_account_type === null) {
                 continue;
             }
 
