@@ -415,6 +415,12 @@ class TrackingSnapshotCommand extends Command
             );
         }
 
+        // Two type vocabularies coexist in real EB responses: the canonical
+        // lowercase form (`interim_available`, `expected`, `closing_booked`)
+        // and the Berlin Group ISO 20022 codes the upstream ASPSP emits
+        // unchanged (`ITAV`, `XPCD`, `CLBD`). Real Revolut returns ITAV;
+        // real ING returns XPCD. Index by both shapes so the preference
+        // ladder works regardless of which form arrives.
         /** @var array<string, array<string, mixed>> $byType */
         $byType = [];
         foreach ($balances as $entry) {
@@ -430,7 +436,11 @@ class TrackingSnapshotCommand extends Command
         }
 
         $picked = $byType['interim_available']
+            ?? $byType['ITAV']
             ?? $byType['expected']
+            ?? $byType['XPCD']
+            ?? $byType['closing_booked']
+            ?? $byType['CLBD']
             ?? null;
 
         if ($picked === null) {
@@ -456,6 +466,13 @@ class TrackingSnapshotCommand extends Command
                 "Enable Banking balance entry missing amount string for bank_account_id={$account->id}",
             );
         }
+        // Berlin Group amounts may carry an explicit leading sign. Money::toMilliunits
+        // accepts an optional `-` but not `+`, so strip a leading `+` here. Sign
+        // inference below then runs on the canonical form.
+        $amount = ltrim($amount);
+        if (str_starts_with($amount, '+')) {
+            $amount = substr($amount, 1);
+        }
 
         // EB sometimes returns balances in a currency that doesn't match the
         // bank_account currency (multi-currency accounts, edge ASPSPs). Pushing
@@ -476,21 +493,31 @@ class TrackingSnapshotCommand extends Command
             );
         }
 
-        // Defaulting `credit_debit_indicator` to 'CRDT' would silently flip the
-        // sign of any DBIT balance EB returned without the field set. Treat
-        // missing/unknown as malformed (consistent with MatchUpdateOrInsert's
-        // transaction parsing). Normalize case — Money::toMilliunits and
-        // MatchUpdateOrInsert both strtoupper the same field, and some ASPSPs
-        // emit lowercase 'crdt'/'dbit'.
-        $cdiRaw = isset($picked['credit_debit_indicator']) && is_string($picked['credit_debit_indicator'])
-            ? strtoupper($picked['credit_debit_indicator'])
-            : null;
-        if ($cdiRaw !== 'CRDT' && $cdiRaw !== 'DBIT') {
-            throw new EnableBankingException(
-                "Enable Banking balance entry missing or invalid credit_debit_indicator for bank_account_id={$account->id}",
-            );
+        // Per Berlin Group convention, balance entries either carry an
+        // explicit `credit_debit_indicator` (CRDT/DBIT) OR a signed amount
+        // string. Real Revolut and ING omit the field and rely on the
+        // amount's sign; our prior strict requirement made the command
+        // unusable on every real ASPSP we'd seen. Strategy:
+        //   - explicit CDI present  → require it to be CRDT/DBIT (case-
+        //     insensitive); reject garbage so a typo never silently flips
+        //     the sign.
+        //   - explicit CDI absent   → infer from the amount sign. Negative
+        //     amount → DBIT, otherwise CRDT. Money::toMilliunits will then
+        //     strip the sign and re-apply via the inferred CDI.
+        $cdiPresent = array_key_exists('credit_debit_indicator', $picked);
+        if ($cdiPresent) {
+            $cdiRaw = is_string($picked['credit_debit_indicator'])
+                ? strtoupper($picked['credit_debit_indicator'])
+                : null;
+            if ($cdiRaw !== 'CRDT' && $cdiRaw !== 'DBIT') {
+                throw new EnableBankingException(
+                    "Enable Banking balance entry has invalid credit_debit_indicator for bank_account_id={$account->id}",
+                );
+            }
+            $cdi = $cdiRaw;
+        } else {
+            $cdi = str_starts_with($amount, '-') ? 'DBIT' : 'CRDT';
         }
-        $cdi = $cdiRaw;
 
         $type = isset($picked['balance_type']) && is_string($picked['balance_type'])
             ? $picked['balance_type']

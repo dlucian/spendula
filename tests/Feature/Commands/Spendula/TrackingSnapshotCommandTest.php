@@ -510,32 +510,177 @@ class TrackingSnapshotCommandTest extends TestCase
         $this->assertSame(1, TrackingSnapshot::query()->count());
     }
 
-    public function test_eb_balance_missing_credit_debit_indicator_aborts_account(): void
+    public function test_eb_balance_missing_cdi_with_positive_amount_infers_crdt(): void
     {
+        // Real Revolut and ING omit `credit_debit_indicator` from balance
+        // entries and rely on the amount's sign. Positive amount → CRDT.
         $this->bindStubJwt();
         $account = $this->seedTrackingAccount(
             ynabAccountId: 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa',
             currency: 'RON',
         );
-        $this->seedSession($account, 'uid-no-cdi');
+        $this->seedSession($account, 'uid-no-cdi-pos');
 
         $this->stubRateProvider('RON', 'EUR', '0.20000', Carbon::parse('2026-04-29'));
 
-        // EB omits credit_debit_indicator entirely. Defaulting to CRDT would
-        // silently flip the sign of any account where the real value is DBIT,
-        // so this is treated as a malformed response.
         Http::fake([
-            self::EB_BASE_URL.'/accounts/uid-no-cdi/balances' => Http::response([
+            self::EB_BASE_URL.'/accounts/uid-no-cdi-pos/balances' => Http::response([
                 'balances' => [[
                     'balance_type' => 'interim_available',
                     'balance_amount' => ['amount' => '500.00', 'currency' => 'RON'],
                     // credit_debit_indicator intentionally omitted
                 ]],
             ], 200),
+            self::YNAB_BASE_URL.'/plans/'.self::YNAB_PLAN_ID.'/accounts/aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa' => Http::response([
+                'data' => ['account' => ['id' => 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa', 'balance' => 0]],
+            ], 200),
+            self::YNAB_BASE_URL.'/plans/'.self::YNAB_PLAN_ID.'/transactions' => Http::response([
+                'data' => ['transactions' => [['id' => 'ynab-tx-1', 'import_id' => 'SPNDL:imported']]],
+            ], 201),
+        ]);
+
+        $this->artisan('spendula:tracking:snapshot')->assertSuccessful();
+        $this->assertSame(1, TrackingSnapshot::query()->count());
+        $snap = TrackingSnapshot::query()->first();
+        $this->assertSame(500_000, (int) $snap->native_balance_milliunits);
+    }
+
+    public function test_eb_balance_missing_cdi_with_negative_amount_infers_dbit(): void
+    {
+        // Overdraft / liability case: a tracking account with a negative
+        // signed amount and no explicit CDI must yield negative milliunits.
+        $this->bindStubJwt();
+        $account = $this->seedTrackingAccount(
+            ynabAccountId: 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa',
+            currency: 'RON',
+        );
+        $this->seedSession($account, 'uid-no-cdi-neg');
+
+        $this->stubRateProvider('RON', 'EUR', '0.20000', Carbon::parse('2026-04-29'));
+
+        Http::fake([
+            self::EB_BASE_URL.'/accounts/uid-no-cdi-neg/balances' => Http::response([
+                'balances' => [[
+                    'balance_type' => 'interim_available',
+                    'balance_amount' => ['amount' => '-100.00', 'currency' => 'RON'],
+                ]],
+            ], 200),
+            self::YNAB_BASE_URL.'/plans/'.self::YNAB_PLAN_ID.'/accounts/aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa' => Http::response([
+                'data' => ['account' => ['id' => 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa', 'balance' => 0]],
+            ], 200),
+            self::YNAB_BASE_URL.'/plans/'.self::YNAB_PLAN_ID.'/transactions' => Http::response([
+                'data' => ['transactions' => [['id' => 'ynab-tx-2', 'import_id' => 'SPNDL:imported']]],
+            ], 201),
+        ]);
+
+        $this->artisan('spendula:tracking:snapshot')->assertSuccessful();
+        $snap = TrackingSnapshot::query()->first();
+        $this->assertSame(-100_000, (int) $snap->native_balance_milliunits);
+    }
+
+    public function test_eb_balance_missing_cdi_with_explicit_plus_amount_infers_crdt(): void
+    {
+        // Berlin Group permits an explicit leading `+` on signed amounts.
+        // Money::toMilliunits only accepts an optional `-`, so the leading
+        // `+` must be stripped before inference + conversion. Without the
+        // strip, the account would be skipped as malformed.
+        $this->bindStubJwt();
+        $account = $this->seedTrackingAccount(
+            ynabAccountId: 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa',
+            currency: 'RON',
+        );
+        $this->seedSession($account, 'uid-no-cdi-plus');
+
+        $this->stubRateProvider('RON', 'EUR', '0.20000', Carbon::parse('2026-04-29'));
+
+        Http::fake([
+            self::EB_BASE_URL.'/accounts/uid-no-cdi-plus/balances' => Http::response([
+                'balances' => [[
+                    'balance_type' => 'interim_available',
+                    'balance_amount' => ['amount' => '+500.00', 'currency' => 'RON'],
+                ]],
+            ], 200),
+            self::YNAB_BASE_URL.'/plans/'.self::YNAB_PLAN_ID.'/accounts/aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa' => Http::response([
+                'data' => ['account' => ['id' => 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa', 'balance' => 0]],
+            ], 200),
+            self::YNAB_BASE_URL.'/plans/'.self::YNAB_PLAN_ID.'/transactions' => Http::response([
+                'data' => ['transactions' => [['id' => 'ynab-tx-plus', 'import_id' => 'SPNDL:imported']]],
+            ], 201),
+        ]);
+
+        $this->artisan('spendula:tracking:snapshot')->assertSuccessful();
+        $snap = TrackingSnapshot::query()->first();
+        $this->assertSame(500_000, (int) $snap->native_balance_milliunits);
+    }
+
+    public function test_eb_balance_invalid_cdi_value_still_aborts(): void
+    {
+        // When CDI IS present, garbage values must still be rejected — a
+        // typo on the bank side shouldn't be silently re-interpreted from
+        // the amount sign.
+        $this->bindStubJwt();
+        $account = $this->seedTrackingAccount(
+            ynabAccountId: 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa',
+            currency: 'RON',
+        );
+        $this->seedSession($account, 'uid-bad-cdi');
+
+        $this->stubRateProvider('RON', 'EUR', '0.20000', Carbon::parse('2026-04-29'));
+
+        Http::fake([
+            self::EB_BASE_URL.'/accounts/uid-bad-cdi/balances' => Http::response([
+                'balances' => [[
+                    'balance_type' => 'interim_available',
+                    'balance_amount' => ['amount' => '500.00', 'currency' => 'RON'],
+                    'credit_debit_indicator' => 'WHATEVER',
+                ]],
+            ], 200),
         ]);
 
         $this->artisan('spendula:tracking:snapshot')->assertFailed();
         $this->assertSame(0, TrackingSnapshot::query()->count());
+    }
+
+    public function test_eb_balance_iso20022_balance_type_codes_are_recognized(): void
+    {
+        // Real ASPSPs emit Berlin Group ISO 20022 codes (`ITAV`, `XPCD`,
+        // `CLBD`) as `balance_type` rather than the canonical lowercase
+        // names. The preference ladder must walk both vocabularies so
+        // ITAV is preferred over XPCD even when both forms appear.
+        $this->bindStubJwt();
+        $account = $this->seedTrackingAccount(
+            ynabAccountId: 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa',
+            currency: 'RON',
+        );
+        $this->seedSession($account, 'uid-iso');
+
+        $this->stubRateProvider('RON', 'EUR', '0.20000', Carbon::parse('2026-04-29'));
+
+        Http::fake([
+            self::EB_BASE_URL.'/accounts/uid-iso/balances' => Http::response([
+                'balances' => [
+                    [
+                        'balance_type' => 'XPCD',
+                        'balance_amount' => ['amount' => '999.00', 'currency' => 'RON'],
+                    ],
+                    [
+                        'balance_type' => 'ITAV',
+                        'balance_amount' => ['amount' => '214.29', 'currency' => 'RON'],
+                    ],
+                ],
+            ], 200),
+            self::YNAB_BASE_URL.'/plans/'.self::YNAB_PLAN_ID.'/accounts/aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa' => Http::response([
+                'data' => ['account' => ['id' => 'aaaaaaaa-1111-aaaa-1111-aaaaaaaaaaaa', 'balance' => 0]],
+            ], 200),
+            self::YNAB_BASE_URL.'/plans/'.self::YNAB_PLAN_ID.'/transactions' => Http::response([
+                'data' => ['transactions' => [['id' => 'ynab-tx-3', 'import_id' => 'SPNDL:imported']]],
+            ], 201),
+        ]);
+
+        $this->artisan('spendula:tracking:snapshot')->assertSuccessful();
+        $snap = TrackingSnapshot::query()->first();
+        // Picked the ITAV entry (214.29), not the XPCD entry (999.00).
+        $this->assertSame(214_290, (int) $snap->native_balance_milliunits);
     }
 
     public function test_ynab_returns_only_duplicate_import_ids_records_snapshot(): void
