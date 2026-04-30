@@ -106,6 +106,35 @@ class Client
     }
 
     /**
+     * Fetch the live balances for the account identified by Enable Banking
+     * UID. Used by the tracking-snapshot path (SPEC §5.3) which converts
+     * the picked balance to EUR and reconciles against YNAB.
+     *
+     * Success: returns the parsed JSON envelope; callers index `balances[]`
+     *   to pick the appropriate `balance_type` (typically `interim_available`).
+     *   Balance amount strings flow through bcmath at the caller per
+     *   CLAUDE.md money rules.
+     *
+     * Failure: same exception ladder as {@see accountTransactions()} — 401
+     *   → EnableBankingAuthException, 403 → EnableBankingRevokedException,
+     *   429 → EnableBankingRateLimitException, 5xx →
+     *   EnableBankingServerException after retries, other 4xx →
+     *   EnableBankingHttpException.
+     *
+     * Side effects: HTTP GET to `/accounts/{uid}/balances`. Idempotent;
+     *   safe to retry on transport failure (see {@see requestJson()}).
+     *
+     * @return array<string, mixed>
+     *
+     * @throws Exceptions\EnableBankingException
+     * @throws RuntimeException for local JWT/config failures (missing app id or unreadable private key).
+     */
+    public function accountBalances(string $uid): array
+    {
+        return $this->requestJson('GET', "/accounts/{$uid}/balances");
+    }
+
+    /**
      * @param  array<string, mixed>  $query
      * @param  array<string, mixed>  $body
      * @return array<string, mixed>

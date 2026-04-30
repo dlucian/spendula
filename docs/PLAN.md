@@ -221,11 +221,13 @@ After a week of real Millennium data, run the `GROUP BY bank_slug, counterparty_
 
 **Acceptance:** integration test with a tracking-mapped Mock or Nordea account; transactions land with `status = tracking`, never enter review queue.
 
-### 3c. `spendula:tracking:snapshot` (SPEC §5.3)
+### ~~3c. `spendula:tracking:snapshot` (SPEC §5.3)~~ (done 2026-04-30)
 
-Compute native balance (via EB balances endpoint preferred, summed transactions fallback), convert to EUR at today's rate, fetch current YNAB balance, push delta as a `Balance Adjustment` transaction, record `tracking_snapshots` row.
+~~Compute native balance (via EB balances endpoint preferred, summed transactions fallback), convert to EUR at today's rate, fetch current YNAB balance, push delta as a `Balance Adjustment` transaction, record `tracking_snapshots` row.~~
 
-**Acceptance:** e2e against a real RON tracking account; repeated runs on the same day idempotent (deltas ≈ 0); snapshot row recorded.
+~~**Acceptance:** e2e against a real RON tracking account; repeated runs on the same day idempotent (deltas ≈ 0); snapshot row recorded.~~
+
+v1 ships the EB-balances path only; the transactions-sum fallback is deferred to a follow-up issue (no `opening_balance` column today; see `app/Console/Commands/Spendula/DECISIONS.md`).
 
 ### 3d. Connect remaining RON banks + Revolut
 

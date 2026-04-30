@@ -52,6 +52,28 @@ class Client
     }
 
     /**
+     * Fetch a single YNAB account under the configured plan.
+     *
+     * Success: returns the YNAB envelope's `data` payload (auto-unwrapped),
+     *   so callers index `account.balance` etc. The balance is in EUR
+     *   milliunits regardless of the source bank's native currency, since
+     *   YNAB plans are single-currency (SPEC §5.3).
+     *
+     * Failure: same exception ladder as {@see accounts()} — 401 →
+     *   YnabAuthException, 429 → YnabRateLimitException after one retry,
+     *   5xx → YnabServerException after retries, other 4xx →
+     *   YnabValidationException.
+     *
+     * Side effects: HTTP GET to `/plans/{plan_id}/accounts/{ynab_account_id}`.
+     *
+     * @return array<string, mixed>
+     */
+    public function account(string $ynabAccountId): array
+    {
+        return $this->requestJson('GET', "/plans/{$this->planId}/accounts/{$ynabAccountId}");
+    }
+
+    /**
      * Bulk-create transactions under /plans/{plan_id}/transactions.
      * The YNAB response body contains both `transactions` (created) and
      * `duplicate_import_ids` (already existed on the server side).

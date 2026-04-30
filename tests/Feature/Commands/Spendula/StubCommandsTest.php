@@ -15,7 +15,6 @@ class StubCommandsTest extends TestCase
         return [
             'spendula:status' => ['spendula:status'],
             'spendula:convert-pending' => ['spendula:convert-pending'],
-            'spendula:tracking:snapshot' => ['spendula:tracking:snapshot'],
         ];
     }
 
