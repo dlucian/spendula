@@ -47,6 +47,27 @@ class TransactionActions
     }
 
     /**
+     * Inverse of approve()/skip()/markTransfer() — used by the review CLI
+     * undo flow (SPEC §7.1, GH #20). Sets `status = fetched` and clears
+     * skip metadata so the row re-enters the review queue exactly as it
+     * arrived from sync. Idempotent on a row already at `fetched`.
+     *
+     * Out of scope: rows mass-approved via `bulkApproveTrivial` are not
+     * tracked on the in-memory undo stack (they never went through an
+     * interactive decision), so this method is not reachable for them
+     * from the review loop. It is still safe to call directly.
+     */
+    public function revertToFetched(Transaction $transaction): Transaction
+    {
+        $transaction->status = TransactionStatus::Fetched;
+        $transaction->skipped_at = null;
+        $transaction->skip_reason = null;
+        $transaction->save();
+
+        return $transaction;
+    }
+
+    /**
      * SPEC §7.1 --bulk-approve-trivial: auto-approve every `fetched` row where
      * resolution level ≤ 1 AND currency is the base currency. Returns the count
      * of rows transitioned. Intended for operators who've validated their bank's

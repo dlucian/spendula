@@ -1,5 +1,121 @@
 # Latest task summary
 
+## GH issue #20 — Review CLI: `u` to undo the last decision
+
+### What changed
+
+- `app/Services/Review/TransactionActions.php` — new
+  `revertToFetched(Transaction): Transaction`. Sets
+  `status = TransactionStatus::Fetched`, clears `skipped_at` and
+  `skip_reason`, persists. Idempotent on a row already at `fetched`.
+  Documented as the inverse of `approve`/`skip`/`markTransfer`,
+  intended for the review-CLI undo flow; rows mass-approved via
+  `bulkApproveTrivial` are explicitly out of scope (they never had an
+  interactive decision and so are not on the in-memory undo stack).
+- `app/Services/Review/ReviewSession.php` — three structural changes:
+  1. **Optional 4th constructor arg `?Closure $keyReader`.** Production
+     callers omit it and the loop continues to read `fgetc(STDIN)` via
+     a new private `readKey()`. When injected, `stdinIsTty()` returns
+     true unconditionally so tests can drive the keypress loop without
+     a real TTY (orthogonal to the existing
+     `app()->runningUnitTests()` guard, which still triggers the
+     non-TTY warn-and-exit branch when no reader is injected — keeping
+     the existing tracking-status exclusion test green).
+  2. **`foreach` → deque pump.** The eagerly-loaded queue is now a
+     mutable `list<Transaction>` consumed by `array_shift`; the
+     `'u'` handler `array_unshift`-es the just-undone row and the
+     currently-displayed (still-undecided) row back to the front and
+     decrements `$position` by 2 so the outer loop re-shifts and
+     re-counts cleanly.
+  3. **New `'u'` case** in the keypress switch. Pops the in-memory
+     LIFO undo stack; on empty prints `Nothing to undo.` and
+     re-prompts the same row without a DB write. On non-empty calls
+     `TransactionActions::revertToFetched()` (against a `fresh()`
+     reload of the row, defensive against another process having
+     mutated it between approve and undo), decrements the matching
+     stats counter (`approved` / `skipped` / `transferred`) plus
+     `reviewed`, prints `↶ undid: {id} {label}→fetched`, and re-queues
+     both rows.
+  - The per-row prompt now reads
+    `[a]pprove  [s]kip  [t]ransfer  [u]ndo  [d]etails  [q]uit > `.
+  - Class-level docblock notes the undo stack is in-memory and
+    discarded on `q` / process exit, and that `bulkApproveTrivial`
+    rows are unreachable from undo.
+- `tests/Feature/Services/Review/TransactionActionsTest.php` —
+  4 new tests for `revertToFetched`: from approved, from skipped
+  (clears reason + `skipped_at`), from transfer, idempotent on
+  already-fetched.
+- `tests/Feature/Services/Review/ReviewSessionTest.php` —
+  7 new tests covering the keypress loop with an injected key reader
+  and a fake `Command` (in-memory `BufferedOutput` + `OutputStyle`,
+  `ArrayInput` with a stubbed stream feeding `Command::ask()` for the
+  skip prompt). Coverage: approve+undo round-trip, skip+undo clears
+  reason, transfer+undo, empty-stack `Nothing to undo.` (no DB
+  write), three LIFO undos in sequence, quit after a partial undo
+  preserves post-undo counters.
+- `docs/SPEC.md` §7.1 — keypress list and ASCII prompt updated to
+  include `[u]ndo`. The new bullet documents the LIFO + in-memory
+  semantics and notes the `bulkApproveTrivial` carve-out.
+
+### Assumptions made
+
+- **Production EB / OAuth state.** No EB or YNAB calls in this slice;
+  the review loop is a local DB-only transition. `OAuth state
+  assumptions` are irrelevant for this change.
+- **Mock ASPSP behaviours.** Same — no PSD2 round-trips touched.
+- **Postgres session timezone is UTC** during the test run (default
+  config). `RefreshDatabase` rolls back the per-test mutations; all
+  183 / 183 tests pass; PHPStan level 8 clean; Pint clean.
+- **In-memory undo stack only.** SPEC §7.1 says the stack is unbounded
+  within a session and discarded on quit. No new schema, no new
+  columns, no migration.
+- **`fresh()` defensive reload.** Before reverting we reload the row
+  from the DB. The cost is one round-trip per undo; the benefit is
+  that any concurrent mutation (vanishingly unlikely on a single-
+  operator CLI) doesn't get silently overwritten by a stale model.
+  This matches the comprehension rule on idempotency for review-loop
+  actions.
+- **Key reader closure, not a stream.** The simplest injection
+  surface for tests is a `Closure(): string` returning one byte at a
+  time. Production stays at `fgetc(STDIN)`; an injected reader also
+  bypasses the TTY-check fallback so the loop runs in unit tests
+  without raw-mode `stty`. `AppServiceProvider` does not bind
+  `ReviewSession`, so `ReviewCommand` continues to instantiate it
+  directly without the optional arg — call site unchanged.
+
+### Blast radius
+
+- **Direct callers of `ReviewSession`:** only `ReviewCommand`. Its
+  `new ReviewSession($this, $actions)` call still type-checks (the
+  4th constructor argument is optional with a default of `null`).
+- **Direct callers of `TransactionActions`:** `ReviewSession` (now
+  also calling `revertToFetched`) and `ReviewCommand` (only for the
+  `--bulk-approve-trivial` path). New method is additive; existing
+  approve/skip/markTransfer/bulkApproveTrivial signatures unchanged.
+- **DB schema:** no migration. No new columns, indexes, or
+  constraints. Existing `transactions.status`, `skipped_at`,
+  `skip_reason` are the only fields touched on revert.
+- **The non-TTY tracking-exclusion test** in `ReviewSessionTest`
+  still works because the `runningUnitTests()` short-circuit is only
+  bypassed when a key reader is injected.
+- **Push pipeline (`spendula:push`)** queries
+  `status IN ('approved', 'transfer')`; reverting a row to `fetched`
+  removes it from the push queue, which is exactly the intended
+  semantics. No interaction surprises.
+
+### Open threads
+
+- `bulkApproveTrivial` rows are unreachable from undo. Documented in
+  the new docblock; if operators ask for "undo my last bulk-approve
+  batch" that's a separate ticket and probably wants a different
+  primitive (e.g. revert-by-`updated_at >=` window).
+- The `↶` glyph in the undo banner is a UTF-8 hairpin-arrow; the EB
+  TTY conventions in this repo already use `─` and `→`, so this is
+  consistent. If the production terminal mis-renders, the change is
+  one string.
+
+---
+
 ## GH issue #10 — Phase 3c: tracking:snapshot command
 
 ### What changed

@@ -95,6 +95,66 @@ class TransactionActionsTest extends TestCase
         $this->assertSame(TransactionStatus::Transfer, $tx->status);
     }
 
+    public function test_revert_to_fetched_from_approved_clears_skip_metadata(): void
+    {
+        $tx = $this->fetchedTransaction();
+        $this->actions->approve($tx);
+        $tx->refresh();
+        $this->assertSame(TransactionStatus::Approved, $tx->status);
+
+        $this->actions->revertToFetched($tx);
+
+        $tx->refresh();
+        $this->assertSame(TransactionStatus::Fetched, $tx->status);
+        $this->assertNull($tx->skipped_at);
+        $this->assertNull($tx->skip_reason);
+    }
+
+    public function test_revert_to_fetched_from_skipped_clears_reason_and_skipped_at(): void
+    {
+        $tx = $this->fetchedTransaction();
+        $this->actions->skip($tx, 'wrong reason');
+        $tx->refresh();
+        $this->assertSame(TransactionStatus::Skipped, $tx->status);
+        $this->assertSame('wrong reason', $tx->skip_reason);
+        $this->assertNotNull($tx->skipped_at);
+
+        $this->actions->revertToFetched($tx);
+
+        $tx->refresh();
+        $this->assertSame(TransactionStatus::Fetched, $tx->status);
+        $this->assertNull($tx->skipped_at);
+        $this->assertNull($tx->skip_reason);
+    }
+
+    public function test_revert_to_fetched_from_transfer(): void
+    {
+        $tx = $this->fetchedTransaction();
+        $this->actions->markTransfer($tx);
+        $tx->refresh();
+        $this->assertSame(TransactionStatus::Transfer, $tx->status);
+
+        $this->actions->revertToFetched($tx);
+
+        $tx->refresh();
+        $this->assertSame(TransactionStatus::Fetched, $tx->status);
+        $this->assertNull($tx->skipped_at);
+        $this->assertNull($tx->skip_reason);
+    }
+
+    public function test_revert_to_fetched_is_idempotent_on_already_fetched(): void
+    {
+        $tx = $this->fetchedTransaction();
+        $this->assertSame(TransactionStatus::Fetched, $tx->status);
+
+        $this->actions->revertToFetched($tx);
+
+        $tx->refresh();
+        $this->assertSame(TransactionStatus::Fetched, $tx->status);
+        $this->assertNull($tx->skipped_at);
+        $this->assertNull($tx->skip_reason);
+    }
+
     public function test_bulk_approve_trivial_only_touches_level_0_and_1_base_currency_fetched(): void
     {
         $trivial = $this->fetchedTransaction(level: 0, currency: 'EUR');
