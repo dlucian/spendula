@@ -112,3 +112,78 @@ its error message ("not found" — in which table?).
 `spendula:status` (phase 4a) or `psql -c "SELECT id, ynab_account_id,
 display_name FROM bank_accounts"`. Documented in the command's
 `--help` output and SPEC follow-ups will reinforce this.
+
+## 2026-05-01 — `spendula:status` dashboard layout + exit-code semantics (issue #16)
+
+Phase 4a replaces the `spendula:status` stub with a single-screen,
+read-only dashboard composed of four sections (per-bank consent,
+queued transactions, last activity wall-times, push-stuck warnings)
+plus a terse "Nothing to show" empty state. The command stays close to
+existing repo conventions: a thin `Command` subclass that delegates
+data-gathering to `App\Services\Status\StatusSnapshotBuilder` and
+rendering to `App\Services\Status\StatusRenderer`.
+
+1. **Snapshot/renderer split.** The builder emits a single
+   `StatusSnapshot` value object and the renderer is pure (snapshot
+   in → output out, no DB calls). The same snapshot drives the
+   rendered output AND the exit code (`hasRedOrStuckRows()`), so
+   tests don't have to parse terminal output to assert exit
+   semantics. This makes the renderer cron-friendly (deterministic
+   exit code from data shape) and the builder unit-testable in
+   isolation.
+2. **Four sections in fixed order.** Consent → queued counts → last
+   activity → push-stuck warnings. The warnings section is omitted
+   entirely (not "0 warnings") when there's nothing to flag — at-a-
+   glance noise reduction on a clean run.
+3. **`pushed`/`skipped` deliberately excluded from the queued
+   counts.** The dashboard surfaces only `fetched`, `approved`,
+   `transfer`, `tracking` to keep the at-a-glance snapshot from
+   becoming a wall of historical numbers. Operators wanting
+   per-status totals run an ad-hoc psql query.
+4. **24h sync-staleness applies to active consent on active banks
+   only.** A bank with `effectiveConsentStatus = 'expired'` (or
+   `bank.active = false`) does NOT additionally trigger a stale-sync
+   warning — the consent state already covers it. This collapses the
+   double-warning surface and keeps the warnings section focused on
+   single, actionable signals.
+5. **Thresholds centralised in `App\Services\Status\Thresholds`.**
+   `CONSENT_YELLOW_DAYS = 14`, `CONSENT_RED_DAYS = 3`,
+   `SYNC_STALE_HOURS = 24`, `PUSH_STUCK_ATTEMPTS = 5`. Single source
+   referenced by the builder and the unit tests, mirroring SPEC §9.4.
+6. **`--include-mock` filters at the SQL builder, not the renderer.**
+   One extra `WHERE banks.slug != 'mock'` clause in three places
+   means the renderer can never accidentally surface a mock row.
+   Filtering at the renderer would mean the snapshot tests special-
+   case mock visibility — more surface for a one-line saving.
+7. **Sync-freshness source is `bank_connections.last_synced_at`, not
+   `bank_account_sync_state.last_successful_sync_at`.** SyncRunner
+   stamps the connection-level field only when every attempted
+   account on that connection succeeded. `bank_account_sync_state`
+   is per-account and survives reauths, so MAX-ing it can show a
+   bank as "fresh" even when the active consent has never synced
+   (just-reauthed) or when one account silently failed. Account-
+   level drill-down is a future surface.
+8. **Stuck query is three-way.** `push_attempt_count >=
+   PUSH_STUCK_ATTEMPTS AND status IN ('approved', 'transfer') AND
+   ynab_transaction_id IS NULL`. PushRunner increments
+   `push_attempt_count` on the success path too, so a row that
+   retried 5 times then succeeded ends up at `push_attempt_count =
+   5` AND `status = pushed`. The status/ynab-id filters keep those
+   post-success rows from lingering forever and pinning exit code 1.
+9. **Effective consent reconciles stored enum with `valid_until`.** A
+   `bank_connections.status = 'active'` row whose `valid_until <
+   now()` exists in the wild between expiry and the next sync run
+   that lazily flips it to `expired`. The snapshot builder treats
+   such rows as effectively-expired: red consent, blank
+   `days_remaining`, and the stale-sync warning is suppressed.
+   Dissolves the lazy-expiry double-warning window.
+10. **All four reads run inside a single `REPEATABLE READ READ ONLY`
+    transaction.** Postgres's default `READ COMMITTED` gives each
+    `SELECT` its own snapshot, so under concurrent sync/push/auth-
+    callback writes the dashboard could combine pre-push queued
+    counts with post-push wall-times. The builder opens a
+    `DB::transaction()` block that issues `SET TRANSACTION` to
+    `REPEATABLE READ READ ONLY` and captures `now()` once into a
+    `Carbon` instance reused for every threshold computation. Read-
+    only and short-lived (4 small aggregates), so the lock impact on
+    concurrent writers is nil.

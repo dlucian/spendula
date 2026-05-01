@@ -246,11 +246,11 @@ ING RO Personal, ING RO Business, UniCredit RO mapped as tracking. Revolut mappe
 
 **Goal:** the full operational surface.
 
-### 4a. `spendula:status`
+### ~~4a. `spendula:status`~~ (done 2026-05-01, GH #16)
 
-Dashboard: per-bank consent expiry (with T-14 yellow / T-3 red warnings per SPEC §9.4), queued transaction counts (`fetched` / `approved` / `transfer`), last sync/push wall-times, `push_attempt_count >= 5` alerts.
+~~Dashboard: per-bank consent expiry (with T-14 yellow / T-3 red warnings per SPEC §9.4), queued transaction counts (`fetched` / `approved` / `transfer`), last sync/push wall-times, `push_attempt_count >= 5` alerts.~~
 
-**Acceptance:** command renders dashboard; warning thresholds verified via fixture data.
+**Acceptance:** command renders dashboard; warning thresholds verified via fixture data. Implemented in `app/Console/Commands/Spendula/StatusCommand.php` delegating to `App\Services\Status\StatusSnapshotBuilder` + `StatusRenderer`. Decisions captured in `app/Console/Commands/Spendula/DECISIONS.md`.
 
 ### 4b. `spendula:convert-pending`
 

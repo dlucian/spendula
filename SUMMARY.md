@@ -1,5 +1,165 @@
 # Latest task summary
 
+## GH issue #16 — Phase 4a: spendula:status dashboard
+
+### What changed
+
+- `app/Console/Commands/Spendula/StatusCommand.php` — Phase-1 stub
+  replaced with a real dashboard implementation. The command stays
+  thin: resolves `App\Services\Status\StatusSnapshotBuilder` and
+  `StatusRenderer` from the container, hands `--include-mock` (default
+  false) to the builder, renders the snapshot to `$this->getOutput()`,
+  and returns `FAILURE` when `$snapshot->hasRedOrStuckRows()`. Class
+  body stays under 30 lines.
+- `app/Services/Status/Thresholds.php` — new final class centralising
+  `CONSENT_YELLOW_DAYS = 14`, `CONSENT_RED_DAYS = 3`,
+  `SYNC_STALE_HOURS = 24`, `PUSH_STUCK_ATTEMPTS = 5`. Mirrors SPEC §9.4
+  for the consent thresholds.
+- `app/Services/Status/StatusSnapshot.php` — new immutable value
+  object carrying `banks` (list of `BankRow`), `stuckTransactions`
+  (list of `StuckTransactionRow`), `hasRedOrStuckRows`, `isEmpty`,
+  and the `generatedAt` Carbon (captured once inside the snapshot
+  transaction so renderer day-math is deterministic).
+- `app/Services/Status/BankRow.php` — new readonly DTO. Carries slug,
+  display name, `bankActive`, `consentValidUntil`,
+  `consentDaysRemaining`, `consentStatus` (stored enum or `'none'`),
+  `effectiveConsentStatus` (reconciled with `valid_until`),
+  `consentWarningLevel` (`green|yellow|red|na`), zero-filled
+  `queuedCounts` for `fetched/approved/transfer/tracking`,
+  `lastSyncedAt` (sourced from `bank_connections.last_synced_at`),
+  `lastPushedAt`, `lastSnapshotAt`, and `syncStale`.
+- `app/Services/Status/StuckTransactionRow.php` — new readonly DTO
+  for one push-stuck warning row.
+- `app/Services/Status/StatusSnapshotBuilder.php` — new service.
+  Single public `build(bool $includeMock, ?Carbon $now = null):
+  StatusSnapshot`. Wraps four reads in a `DB::transaction()` after
+  `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`. Picks
+  one connection per bank via Postgres `DISTINCT ON` (active row
+  first, else most-recent by `created_at`). Stuck query is the
+  three-way `push_attempt_count >= 5 AND status IN ('approved',
+  'transfer') AND ynab_transaction_id IS NULL` so post-success rows
+  don't linger.
+- `app/Services/Status/StatusRenderer.php` — new service. Pure
+  renderer; takes a `StatusSnapshot` plus the command's
+  `OutputStyle`. Empty snapshot → "Nothing to show" line. Otherwise
+  four sections in fixed order: Consent table → Queued transactions
+  table → Last activity table → Push-stuck warnings list (omitted
+  entirely when empty). Uses Symfony Console color tags
+  (`<fg=yellow>`, `<fg=red>`, `<fg=green>`); piped/non-TTY output
+  drops the tags automatically.
+- `tests/Feature/Commands/Spendula/StatusCommandTest.php` — new
+  feature test. 17 cases: empty DB → exit 0; consent T-15/T-14/T-4/
+  T-3/expired threshold transitions; queued counts vs
+  `pushed`/`skipped` exclusion; 25h-stale on active consent → exit 1;
+  25h-stale on expired consent → no double-warn; stuck at attempts=5
+  → exit 1; stuck at attempts=4 → exit 0; stuck filter excludes
+  `pushed` rows AND rows with `ynab_transaction_id` set; inactive
+  bank carve-out; lazy-expiry reconciliation; just-reauthed bank
+  with NULL `last_synced_at` is stale despite stale per-account
+  state; `--include-mock` toggle.
+- `tests/Unit/Services/Status/StatusSnapshotBuilderTest.php` — new
+  unit test covering threshold-level transitions, expired/no-
+  connection states, zero-fill of queued counts, lazy-expiry
+  reconciliation, the `hasRedOrStuckRows` boolean across all three
+  trip sources, inactive-bank exclusion, injected-clock determinism,
+  and the just-reauthed/null-last-synced-at case at the
+  builder layer.
+- `tests/Unit/Services/Status/StatusRendererTest.php` — new unit
+  test using `Symfony\Component\Console\Output\BufferedOutput`
+  wrapped in a Laravel `OutputStyle` to capture writes.
+  Asserts: empty-snapshot friendly message, color-tag emission for
+  yellow + red consent in decorated mode, stale annotation, omission
+  of warnings section when none, full per-row format of the warnings
+  section including the `(unknown)` counterparty placeholder.
+- `tests/Feature/Commands/Spendula/StubCommandsTest.php` — removed
+  the `'spendula:status'` data-provider entry now that the command
+  is no longer a stub.
+- `app/Console/Commands/Spendula/DECISIONS.md` — appended the
+  2026-05-01 dashboard entry. Ten decisions, covering: snapshot/
+  renderer split, four-section fixed order, exclusion of
+  `pushed`/`skipped`, gated stale-sync warning, centralised
+  thresholds, mock filter at SQL builder, sync-freshness source
+  rationale, three-way stuck query, effective-consent
+  reconciliation, REPEATABLE READ READ ONLY transaction.
+- `docs/PLAN.md` — Phase 4a entry struck through with
+  `(done 2026-05-01, GH #16)` and a one-liner pointing to the
+  command/service files plus the new DECISIONS entry. Phases 4b
+  (`spendula:convert-pending`) and 4c (README/ops polish) remain
+  open.
+
+### Why
+
+Phase 4a is the dashboard surface called out in `docs/PLAN.md` Phase
+4 and SPEC §9.4. Operators need at-a-glance visibility into consent
+expiry windows, how many transactions are waiting in each pipeline
+stage per bank, when each bank last completed a successful sync/push/
+snapshot, and which transactions have stuck in the push queue. The
+exit code makes the command cron-suitable: a non-zero exit gates a
+notification when something needs operator attention, with no parsing
+of the rendered text required.
+
+### Assumptions made
+
+- **Mock ASPSP behaviours.** No PSD2 round-trips touched; the
+  dashboard is a local DB-only read. Mock-bank visibility is gated
+  by `--include-mock` so a live operator's daily run hides the
+  seeded mock by default.
+- **YNAB API responses.** No YNAB calls in this slice. The
+  push/snapshot wall-times come from local columns
+  (`transactions.pushed_at`, `tracking_snapshots.pushed_at`) that
+  the existing pipelines already populate.
+- **OAuth state.** Not exercised. The dashboard reads
+  `bank_connections.status` and `valid_until` as written by
+  `CallbackHandler` and `SyncRunner`; the lazy-expiry reconciliation
+  treats `status='active' AND valid_until < now()` as effectively
+  expired, which matches the `SyncRunner`-flips-it-on-next-sync
+  behaviour.
+- **Postgres session timezone is UTC** during the test run (the
+  default config). `valid_until`, `last_synced_at`, and friends
+  round-trip correctly.
+- **External quirks treated as fixed.** SPEC §9.4 thresholds
+  (T-14 / T-3) are the source of truth; the 24h sync-staleness
+  bound is a Phase 4a-introduced operator-prompt threshold (not in
+  the SPEC, recorded in DECISIONS).
+- **`bank_account_sync_state` is intentionally not surfaced.** The
+  snapshot uses `bank_connections.last_synced_at` instead — that
+  field is only stamped on whole-connection success, which is the
+  right "freshness" signal. Per-account drill-down is a future
+  surface.
+- **Stuck-query three-way filter.** `push_attempt_count >= 5 AND
+  status IN ('approved','transfer') AND ynab_transaction_id IS
+  NULL`. PushRunner increments the counter on the success path too
+  (verified in `app/Services/Push/PushRunner.php`), so a two-way
+  filter on attempt-count alone would linger forever.
+
+### Blast radius
+
+- **Direct callers of the new services:** only `StatusCommand`. The
+  builder/renderer/DTO classes are otherwise unreferenced.
+- **DB schema:** no migration. Reads four existing tables (`banks`,
+  `bank_connections`, `bank_accounts`, `transactions`,
+  `tracking_snapshots`).
+- **Existing commands:** `StubCommandsTest` data provider trimmed
+  by one row. No other command, service, or model touched.
+- **Concurrency:** the new `REPEATABLE READ READ ONLY` transaction
+  is short-lived (four small aggregates over single-operator-scale
+  data). No new advisory lock — there are no writes in this path.
+- **Cron exit code:** `0` only when no red/expired consent on an
+  active bank, no sync-stale on an active-bank-with-active-consent,
+  and no push-stuck rows. Operators on idle should mute the cron
+  job rather than soften the threshold (documented in DECISIONS as
+  intentional).
+
+### Out of scope
+
+- Web UI, sparklines, push-error history beyond the latest message,
+  trend data, drill-down commands.
+- Per-account sync drill-down (`bank_account_sync_state` surfacing).
+- Phase 4b (`spendula:convert-pending`) and Phase 4c (README/ops
+  polish) — both can ship independently.
+
+---
+
 ## GH issue #20 — Review CLI: `u` to undo the last decision
 
 ### What changed
