@@ -252,15 +252,15 @@ ING RO Personal, ING RO Business, UniCredit RO mapped as tracking. Revolut mappe
 
 **Acceptance:** command renders dashboard; warning thresholds verified via fixture data. Implemented in `app/Console/Commands/Spendula/StatusCommand.php` delegating to `App\Services\Status\StatusSnapshotBuilder` + `StatusRenderer`. Decisions captured in `app/Console/Commands/Spendula/DECISIONS.md`.
 
-### 4b. `spendula:convert-pending`
+### 4b. `spendula:convert-pending` (deferred to Phase 2+; see [dlucian/spendula#23](https://github.com/dlucian/spendula/issues/23))
 
 Real implementation of the retry path for failed currency conversions (tracking-account transactions whose push failed due to missing rates, etc.).
 
 **Acceptance:** integration test against seeded failure state.
 
-### 4c. README and ops polish
+### ~~4c. README and ops polish~~ (done 2026-05-01, GH #18)
 
-Final pass: setup walkthrough (sandbox and production EB registration, YNAB PAT, DB bootstrap, first auth, first sync, first push, weekly ritual script).
+~~Final pass: setup walkthrough (sandbox and production EB registration, YNAB PAT, DB bootstrap, first auth, first sync, first push, weekly ritual script).~~
 
 **v1 complete** when phase 4 ships; SPEC §14 is satisfied. Future work maps to SPEC §15.
 

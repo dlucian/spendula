@@ -44,8 +44,10 @@
         </table>
     @endif
 
-    <p class="muted">You can close this tab. Map accounts to YNAB next:
-        <code>php artisan spendula:accounts:seed-mock --bank-account-id=&lt;id&gt; --ynab-account-id=&lt;id&gt;</code>.
+    <p class="muted">You can close this tab. Map this bank account to a YNAB account next:
+        <code>php artisan spendula:accounts:map</code> (interactive).
+        For scripted dev / CI use, see
+        <code>php artisan spendula:accounts:seed-mock --help</code>.
     </p>
 </body>
 </html>

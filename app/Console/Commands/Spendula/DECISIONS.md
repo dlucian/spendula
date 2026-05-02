@@ -187,3 +187,85 @@ rendering to `App\Services\Status\StatusRenderer`.
     `Carbon` instance reused for every threshold computation. Read-
     only and short-lived (4 small aggregates), so the lock impact on
     concurrent writers is nil.
+
+## 2026-05-01 — README structure for v1 release (issue #18)
+
+Phase 4c lands the README rewrite that v1 release needs. Decisions
+recorded here so future doc passes don't relitigate them.
+
+1. **Incremental rewrite, not from-scratch.** The pre-#18 README
+   already covered framing, prerequisites, local dev setup, sandbox
+   first run, the production-EB recipe, the artisan command tables,
+   and the YNAB-starting-balance gotcha — roughly 70 % of the issue's
+   ten-section ask. The four genuine gaps were (a) a tracking-accounts
+   walkthrough, (b) a copy-pasteable weekly-ritual snippet, (c) a
+   structured troubleshooting section, and (d) a "v1 complete — SPEC
+   §14 boxes checked" footer. Plus a reorder so the new-operator
+   "zero to first push" narrative reads top-to-bottom. The
+   alternative — discarding the existing prose and starting fresh —
+   would have lost hard-won wording (the YNAB starting-balance gotcha,
+   the `:8443` rationale) for no benefit.
+2. **Section ordering reflects the new-operator narrative.**
+   Prerequisites → first-time setup → sandbox first run → production
+   EB recipe → adding real banks → real-bank flow → tracking accounts
+   → weekly ritual → troubleshooting → production deploy →
+   conventions → v1-complete footer. The issue's "rough order" §1–10
+   is preserved; production deploy and conventions sit underneath
+   because they're reference material, not steps in the dry
+   walkthrough.
+3. **`spendula:accounts:seed-mock` retained for tests / CI but
+   retired from the production walkthrough.** `accounts:map` is the
+   prod path. The README's command table flags the distinction so a
+   curious operator running `php artisan list` understands why both
+   exist. Removing `seed-mock` entirely is a separate cleanup PR if
+   ever taken; it ships with v1.
+4. **`spendula:convert-pending` documented as deferred via #23 rather
+   than removed.** The stub command stays in v1 (per the team-lead's
+   drop-and-defer routing on #17). The README's stubs table footnote
+   points at [dlucian/spendula#23](https://github.com/dlucian/spendula/issues/23)
+   for the deferred follow-up. Removing the stub command itself is
+   out of scope for #18.
+5. **`spendula:banks:add` is an explicit step in the real-bank flow.**
+   `config/spendula-banks.php` ships only the `mock` fixture (real
+   banks must NOT appear in source — public repo). `spendula:auth:start`
+   hard-fails on an unknown bank slug. So the real-bank walkthrough
+   STARTS with `spendula:banks:add --slug=… --display-name=…
+   --aspsp-name=… --aspsp-country=… --default-currency=…` before
+   `auth:start <slug>`. Caught during codex plan-review.
+6. **Weekly-ritual snippet uses two stages (pipeline + dashboard),
+   not one chain.** The naïve `sync && review && push && status`
+   chain skips `spendula:status` whenever `sync` or `push` returns
+   non-zero — which is exactly when the dashboard's diagnostic value
+   is highest. The README's snippet runs the pipeline as one chain
+   and then calls `spendula:status` unconditionally on the next line,
+   so partial pipeline failures still surface in the dashboard.
+   Caught during codex plan-review.
+7. **Mock-ASPSP walkthrough uses `spendula:status --include-mock`.**
+   Per #16's design, bare `spendula:status` filters mock-bank rows
+   out by default (real banks at a glance, mock is dev noise). The
+   sandbox section therefore documents `--include-mock` so the
+   dashboard step actually surfaces the mock data the operator just
+   produced. Real-bank operator flows use bare `spendula:status`.
+   Caught during codex plan-review.
+8. **`callback-success.blade.php` recommends `accounts:map`.** The
+   pre-#18 view hardcoded `spendula:accounts:seed-mock --bank-account-id=…
+   --ynab-account-id=…` as the post-consent next step. To match the
+   README's production walkthrough, the view now recommends
+   `php artisan spendula:accounts:map` (interactive) and links to
+   `spendula:accounts:seed-mock --help` as the dev/CI scripted
+   alternative. The bank account id stays surfaced on the page so
+   the operator can copy it for either path. Caught during codex
+   plan-review.
+9. **SPEC + PLAN docs-sync precedes the README cross-link.** SPEC
+   §3.3 lines previously labelled `accounts:map`, `status`, and
+   `tracking:snapshot` as "stubs in phase 1" even though they all
+   ship real now; flipped to "real in phase 2", "real in phase 4",
+   and "real in phase 3" respectively. SPEC §3.3's "Every real
+   command acquires an advisory lock" sentence carves out
+   `accounts:map` (idempotent UPDATE-LAST-WINS) and `status` (read-
+   only). SPEC §14 bullet 20 picks up a parenthetical pointing at
+   the README sections that satisfy it. PLAN.md §16.4 strikes
+   through items 24 and 26 (status + consent surfacing — both done
+   via #16) and adds the #23 deferral parenthetical on item 25.
+   Caught during codex plan-review — README would otherwise have
+   pointed at stale invariants.

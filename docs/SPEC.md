@@ -91,17 +91,17 @@ Spendula exposes one HTTP route (the OAuth callback) and a set of artisan comman
 - `spendula:banks:sync` — upsert fixture banks (e.g. `mock`) from `config/spendula-banks.php`; never touches operator-added rows — **real in phase 1**
 - `spendula:banks:add` — insert an operator bank into the `banks` table directly. Operator banks never appear in source. — **real in phase 2**
 - `spendula:auth:start {bank_slug}` — generate a consent URL for a bank — **real in phase 1**
-- `spendula:accounts:map` — interactive mapping of bank accounts to YNAB accounts — **stub in phase 1** (phase 1 has one bank, one account; mapping is handled by a one-off seed or inline config)
+- `spendula:accounts:map` — interactive mapping of bank accounts to YNAB accounts — **real in phase 2**
 - `spendula:sync [--bank=slug]` — fetch new transactions — **real in phase 1** (on-budget flow only; tracking-account path is phase-2)
 - `spendula:review` — interactive CLI queue for Approve/Skip/Transfer — **real in phase 1**
 - `spendula:push` — push approved transactions to YNAB — **real in phase 1**
-- `spendula:status` — dashboard: consent expiry, queued transactions, last sync/push times — **stub in phase 1**
-- `spendula:convert-pending` — retry failed currency conversions for tracking-account transactions — **stub in phase 1** (no multi-currency in phase 1)
-- `spendula:tracking:snapshot [--account=id]` — compute and push tracking-account balance snapshots — **stub in phase 1** (no tracking accounts in phase 1)
+- `spendula:status` — dashboard: consent expiry, queued transactions, last sync/push times — **real in phase 4**
+- `spendula:convert-pending` — retry failed currency conversions for tracking-account transactions — **stub in phase 1** (no multi-currency in phase 1; deferred follow-up tracked in [dlucian/spendula#23](https://github.com/dlucian/spendula/issues/23))
+- `spendula:tracking:snapshot [--account=id]` — compute and push tracking-account balance snapshots — **real in phase 3**
 
 All stubs exist from phase 1 onward so the command surface is stable; callers and docs don't need to change when stubs become real.
 
-Every real command acquires an **advisory lock** (`pg_try_advisory_lock` with a command-specific key) before doing work. Concurrent invocations exit immediately with a message rather than racing.
+Every real command acquires an **advisory lock** (`pg_try_advisory_lock` with a command-specific key) before doing work. Concurrent invocations exit immediately with a message rather than racing. (Carve-outs: `spendula:accounts:map` is idempotent UPDATE-LAST-WINS and does not require a lock; `spendula:status` is read-only and takes no lock.)
 
 ### 3.3 Data flow (happy path, on-budget account)
 
@@ -970,7 +970,7 @@ No rolling deploys, no zero-downtime requirements — single-user tool, brief do
 17. Transactional callback handler with raw-response-first persistence.
 18. PHPStan level 8, Pint formatting, unit + fixture integration tests.
 19. Caddy + Tailscale deployment.
-20. Setup README covering: key generation, Enable Banking app registration (sandbox and production, including `gdpr_email` / `privacy_url` / `terms_url` requirements for production), YNAB PAT generation, database bootstrap, first auth, first sync, first push.
+20. Setup README covering: key generation, Enable Banking app registration (sandbox and production, including `gdpr_email` / `privacy_url` / `terms_url` requirements for production), YNAB PAT generation, database bootstrap, first auth, first sync, first push. (Satisfied by README §3 Prerequisites, §6 Production EB registration, §11 Troubleshooting.)
 
 ### 14.1 v1 non-goals (explicitly deferred)
 
@@ -1069,9 +1069,9 @@ Goal: RON bank accounts (ING RO Personal, ING RO Business, UniCredit RO) sync in
 
 Goal: the full operational surface.
 
-24. `spendula:status` dashboard.
-25. `spendula:convert-pending` real implementation.
-26. Consent expiry surfacing in `status` with T-14 / T-7 / T-3 warnings.
+24. ~~`spendula:status` dashboard.~~ (done 2026-05-01, GH #16)
+25. `spendula:convert-pending` real implementation. (deferred to Phase 2+; see [dlucian/spendula#23](https://github.com/dlucian/spendula/issues/23))
+26. ~~Consent expiry surfacing in `status` with T-14 / T-7 / T-3 warnings.~~ (covered by `spendula:status` — T-14 yellow / T-3 red per SPEC §9.4)
 
 ### 16.5 After phase 4
 

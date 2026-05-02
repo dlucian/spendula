@@ -1,5 +1,187 @@
 # Latest task summary
 
+## GH issue #18 — Phase 4c: README + ops polish for v1 release
+
+### What changed
+
+- `README.md` — rewritten end-to-end to follow the new-operator
+  zero-to-first-push narrative the issue asked for. Sixteen numbered
+  sections in fixed order: framing, stack, documentation index,
+  prerequisites, first-time setup, sandbox first run, production EB
+  recipe, adding real banks to the catalogue, YNAB starting-balance
+  vs. import-cutoff gotcha, real-bank flow, tracking accounts (multi-
+  currency), weekly ritual, troubleshooting, artisan commands table,
+  production deployment, conventions, and the v1-complete §14
+  satisfaction footer. Existing prose preserved verbatim where it was
+  already correct (the production-EB-against-local-dev recipe, the
+  YNAB starting-balance gotcha, the production deploy pointer at
+  `docs/DEPLOY.md`); the four new sections are tracking accounts,
+  weekly ritual, troubleshooting, and the v1-complete footer.
+  Migrations are now ordered before `.env` fill-in so the operator
+  can run `php artisan test` early and confirm the toolchain is
+  healthy before chasing credential issues. The Mock-ASPSP
+  walkthrough uses `spendula:status --include-mock` for the dashboard
+  step (bare `status` filters mock rows out by default — #16's
+  design); the real-bank walkthrough uses bare `spendula:status`.
+- `README.md` artisan commands table — `spendula:status` and
+  `spendula:tracking:snapshot` moved out of the Phase-2+ stubs table
+  and into the Implemented table. Added rows for
+  `spendula:counterparty:recompute` and `spendula:accounts:seed-mock`
+  with one-line context. Stubs table now contains only
+  `spendula:convert-pending` with a footnote pointing at
+  [dlucian/spendula#23](https://github.com/dlucian/spendula/issues/23)
+  for the deferred follow-up.
+- `README.md` — new "Adding real banks to the catalogue" section
+  documents `spendula:banks:add` as the explicit step before any
+  real-bank `auth:start`. Includes a fenced `spendula:banks:add`
+  example for Millennium BCP plus a tinker recipe for pulling the
+  canonical `--aspsp-name` value from `EnableBanking\Client::aspsps()`.
+  Without this step `auth:start <real-slug>` hard-fails because
+  `config/spendula-banks.php` ships only the `mock` fixture by design.
+- `README.md` — new "Tracking accounts (multi-currency)" section
+  describes `spendula:accounts:map`'s actual prompt flow (foreign-
+  currency bank accounts get only tracking-typed YNAB targets in the
+  picker — derived from `on_budget=false`, NOT a fictional
+  `on_budget=n` flag) plus the `spendula:tracking:snapshot` workflow
+  (suggested cadence: monthly with month-close per SPEC §5.4;
+  same-day idempotency; `--account=<spendula-uuid>` per-account
+  scope; `--dry-run` to preview deltas).
+- `README.md` — new "Weekly ritual" section ships a copy-pasteable
+  bash snippet split into two stages: pipeline
+  (`sync && review && push`) followed by `spendula:status`
+  unconditionally. Documents the exit-code semantics: exit 1 on red
+  consent / push-stuck / stale-sync; exit 0 on yellow consent or
+  all-clear.
+- `README.md` — new "Troubleshooting" section with four sub-blocks:
+  consent expired (re-run `auth:start <slug>`), push stuck
+  (inspect via `status` then re-run `push`), real-bank consent
+  failing on first try (verify EB env via tinker), and the YNAB
+  starting-balance gotcha (cross-link to §8). Plus a sub-block for
+  `spendula:counterparty:recompute --bank-account-id=<uuid>` with
+  fenced example.
+- `README.md` — new "v1 complete — SPEC §14 satisfied" footer.
+  Twenty-row table mapping each SPEC §14 bullet to the file or
+  command satisfying it, plus a short re-verification checklist for
+  the v1-release acceptance gates (Mock end-to-end, `php artisan
+  test` green, PHPStan level 8 green, Pint clean, prod Docker build
+  succeeds). Replaces the stale "Project status" section that
+  claimed phases 2–4 were pending.
+- `resources/views/banking/callback-success.blade.php` — the post-
+  consent next-step recommendation flipped from
+  `spendula:accounts:seed-mock --bank-account-id=… --ynab-account-id=…`
+  to `spendula:accounts:map` (interactive, prod path). The
+  `seed-mock --help` alternative is mentioned for dev / CI scripted
+  use, and the `bank_account_id` stays surfaced in the table above
+  so the operator can copy it for either path. Keeps the callback
+  success page in sync with the README's production walkthrough.
+- `docs/SPEC.md` §3.3 — flipped the labels for `spendula:accounts:map`
+  ("real in phase 2"), `spendula:status` ("real in phase 4"), and
+  `spendula:tracking:snapshot` ("real in phase 3"). Appended a
+  parenthetical to the "Every real command acquires an advisory
+  lock" sentence carving out `spendula:accounts:map` (idempotent
+  UPDATE-LAST-WINS) and `spendula:status` (read-only). Added the
+  `dlucian/spendula#23` deferral pointer to the
+  `spendula:convert-pending` line.
+- `docs/SPEC.md` §14 bullet 20 — appended a parenthetical pointing
+  at the README sections (§3 Prerequisites, §6 Production EB
+  registration, §11 Troubleshooting wired into §12 of the new
+  layout) that satisfy the "Setup README" v1 ship criterion.
+- `docs/SPEC.md` §16.4 — items 24 (`spendula:status` dashboard) and
+  26 (consent expiry surfacing in `status`) struck through with a
+  done-by-#16 marker. Item 25 (`spendula:convert-pending`) gets the
+  same `dlucian/spendula#23` deferral parenthetical.
+- `docs/PLAN.md` — Phase 4c struck through (`done 2026-05-01,
+  GH #18`). Phase 4b (`spendula:convert-pending`) gains the
+  `dlucian/spendula#23` deferral parenthetical. The "v1 complete
+  when phase 4 ships; SPEC §14 is satisfied" sentence is now the
+  operative truth.
+- `app/Console/Commands/Spendula/DECISIONS.md` — appended the
+  `2026-05-01 — README structure for v1 release (issue #18)` entry.
+  Nine decisions covering: incremental rewrite vs. from-scratch,
+  section ordering reflecting the new-operator narrative,
+  `accounts:seed-mock` retained for tests/CI but retired from the
+  prod walkthrough, `convert-pending` documented as deferred via #23
+  rather than removed, `spendula:banks:add` as an explicit real-bank
+  flow step, weekly-ritual snippet's two-stage shape, mock
+  walkthrough's `--include-mock` requirement, callback view edited
+  to recommend `accounts:map`, and the SPEC + PLAN docs-sync that
+  precedes the README cross-link.
+
+### Assumptions made
+
+- **Mock ASPSP behaviours.** No PSD2 round-trips touched — this is
+  a docs change. The Mock-ASPSP behaviours called out in the README
+  walkthrough (zero seeded accounts by default, level-1 inverted
+  counterparty resolution) are unchanged from prior sessions.
+- **YNAB API responses.** No live YNAB hits. The footer's §14 bullet
+  9 ("on-budget EUR push") and bullet 10 ("tracking snapshot push")
+  point at code paths shipped in earlier phases; this PR doesn't
+  add or change YNAB-touching code.
+- **OAuth state assumptions.** No callback or session round-trips
+  touched. The callback success view edit is a Blade-string change
+  with no behavioural impact on the request lifecycle.
+- **Postgres session timezone is UTC** during the test run (default
+  config). No SQL or migration changes in this PR.
+- **External quirks treated as fixed.** SEPA-correct CRDT/DBIT
+  counterparty inversion, `identification_hash` stability across
+  re-auth, EB pagination via `continuation_key` — all referenced in
+  the README footer §14 table without re-litigating; behaviours
+  pinned by earlier-phase tests.
+
+### How to verify
+
+- **Dry walkthrough.** Read `README.md` top to bottom on a fresh
+  shell and confirm each command runs without external doc lookup:
+  prerequisites → setup → sandbox first run → production EB recipe
+  → real-bank flow → weekly ritual. Each command in a fenced block
+  has expected behaviour described inline.
+- **Mock-ASPSP sandbox loop**: every step in §5 runs cleanly,
+  `spendula:status --include-mock` renders the mock bank's rows.
+- **Real-bank gate**: `spendula:banks:add --slug=<real-slug> …`
+  succeeds and the subsequent `spendula:auth:start <real-slug>`
+  reaches the EB consent URL where it would otherwise hard-fail.
+- **Weekly ritual partial-failure path**: seed a `push_attempt_count
+  = 5 AND status = 'approved'` row, run the snippet, confirm
+  `spendula:status` is reached and exits 1 even when `spendula:push`
+  is a no-op or fails.
+- **Callback view sync**: `grep -F 'spendula:accounts:map'
+  resources/views/banking/callback-success.blade.php` returns 1
+  match (the recommended next step); `grep -F
+  'spendula:accounts:seed-mock' resources/views/banking/
+  callback-success.blade.php` returns 1 match (the dev-helper
+  alternative line, NOT the primary recommendation).
+- **SPEC + PLAN docs-sync**: `grep -nE 'stub in phase.*(status|
+  tracking:snapshot|accounts:map)' docs/SPEC.md` returns zero matches.
+  `grep -nE '4c\. README' docs/PLAN.md` returns the strikethrough
+  line.
+- **Command coverage**: every command name in
+  `app/Console/Commands/Spendula/*.php` appears in at least one
+  fenced code block in `README.md`, except `spendula:convert-pending`
+  which is documented in the stubs footnote only. Specifically
+  `spendula:counterparty:recompute` and `spendula:banks:add` get
+  fenced examples in addition to their table rows.
+- **Code-quality gates**: `php artisan test` green, `vendor/bin/
+  phpstan analyse` level 8 green, `vendor/bin/pint --test` clean.
+  No PHP / migration / config changes outside the callback Blade
+  string and the docs.
+
+### Out of scope
+
+- **Removing the `spendula:convert-pending` stub command.** Per the
+  team-lead's drop-and-defer routing on #17, the stub stays in v1.
+  Removing it (plus the matching row in `StubCommandsTest.php`) is
+  a separate cleanup PR if ever taken.
+- **Cron / systemd timer surface for the weekly ritual.** SPEC §14.1
+  defers scheduled sync to v2+. The README documents the snippet as
+  a manual trigger only.
+- **CLAUDE.md updates.** CLAUDE.md is the session-orientation file
+  for future Claude Code runs; its scope is different from the
+  README's (operator-facing). Untouched by this PR.
+- **Web UI for review.** SPEC §14.1 non-goal. `spendula:review` is
+  the v1 approval surface.
+
+---
+
 ## GH issue #16 — Phase 4a: spendula:status dashboard
 
 ### What changed
