@@ -37,10 +37,14 @@ class Resolver
         //   "TRF P  <name>", "TRF P <name>"
         //   "TRF. P O <name>", "TRF. P  <name>"
         '/^TRF\.?\s+(DE|MB\s+WAY\s+P|P\s+O|P)\s+/i',
-        // BCP direct debit:
+        // BCP direct debit (handled with trailing-reference cut by
+        // extractFromDdWithReference — falls through to this prefix only
+        // when the merchant has no numeric reference, e.g. "DD ESSENTIA").
         '/^DD\s+/i',
         // BCP service payment:
         '/^PAGSERV\s+/i',
+        // BCP toll/parking via Via Verde tag: "PAG BXVAL- NNNN VIAVERDE".
+        '/^PAG\s+BXVAL-\s+\d+\s+/i',
     ];
 
     /**
@@ -62,6 +66,44 @@ class Resolver
      */
     private const string ING_STRUCTURED_PATTERN =
         '/^Card number,\s*\*+\s*\d+,\s*Transaction at,\s*(?P<merchant>.+?)(?=,\s*Authorization date,|$)/iu';
+
+    /**
+     * BCP direct-debit shape: "DD <merchant> <ref-digits> [<alpha-token>]
+     * (PT|DI)<id>" where:
+     *
+     *   - the merchant capture is non-digit (`[^\d]+?`) so descriptors
+     *     that embed numbers themselves (e.g. "DD ACME 2024 PLAN PT…",
+     *     "DD GYM 1234 PREMIUM 000123 PT…") fall through.
+     *   - the customer reference must be 8+ digits to prove it's a
+     *     real reference rather than a year/plan code (a 4-digit token
+     *     directly before the creditor id is structurally
+     *     indistinguishable from a merchant whose name ends with a
+     *     year, e.g. "DD AMAZON 2024 PT…").
+     *   - an optional one-word alpha sub-product token (e.g. "MEDIS"
+     *     in "DD OCIDENTAL 00346849108 MEDIS DI…") is allowed between
+     *     the reference and the creditor id; numeric intermediate
+     *     tokens are rejected (could be year/plan codes too).
+     *
+     * Falling through is strictly safer: over-merging distinct payees
+     * by mis-cutting at an embedded number costs more than leaving a
+     * noisy payee. SUNSETFITGYM (4-digit ref in real BCP data) is
+     * accepted as collateral; its 2 rows aren't worth the false-
+     * positive risk against arbitrary year-suffixed merchants.
+     */
+    private const string BCP_DD_WITH_REFERENCE_PATTERN =
+        '/^DD\s+(?P<merchant>[^\d]+?)\s+\d{8,}(?:\s+\p{L}+)?\s+(?:PT|DI)\d{6,}\s*$/iu';
+
+    /**
+     * BCP ATM withdrawal: "LEV ATM <card4> <atm-id>   <location>        <cardholder>".
+     * Cardholder is BCP echoing the account holder back — drop it.
+     * Location capture uses a lazy `.+?` terminated by 4+ whitespace —
+     * the cardholder gap in observed BCP data is ≥8 spaces while internal
+     * location spacing (e.g. multi-word place names with stray padding)
+     * stays at 1-2 spaces. Internal whitespace runs in the captured
+     * location are collapsed to single spaces by extractFromLevAtm().
+     */
+    private const string BCP_LEV_ATM_PATTERN =
+        '/^LEV\s+ATM\s+\d+\s+\d+\s+(?P<location>.+?)\s{4,}\S/i';
 
     /**
      * @param  array<string, mixed>  $transaction
@@ -96,12 +138,17 @@ class Resolver
         }
 
         // Level 2: extract a clean counterparty from remittance_information[0].
-        // Tried in order: structured-CSV extraction (ING RO et al.) first,
-        // then prefix + suffix stripping (BCP, generic patterns).
+        // Tried in order: BCP-specific shape detectors (LEV ATM, DD-with-
+        // reference) first because their cleanup is destructive and
+        // shape-aware; then structured-CSV extraction (ING RO et al.);
+        // then generic prefix + suffix stripping (BCP COMPRA / TRF / etc).
         if (isset($transaction['remittance_information']) && is_array($transaction['remittance_information'])) {
             $first = $transaction['remittance_information'][0] ?? null;
             if (is_string($first) && trim($first) !== '') {
-                $extracted = $this->extractFromStructured($first) ?? $this->stripPrefixes($first);
+                $extracted = $this->extractFromLevAtm($first)
+                    ?? $this->extractFromDdWithReference($first)
+                    ?? $this->extractFromStructured($first)
+                    ?? $this->stripPrefixes($first);
                 $extracted = $this->stripSuffixes($extracted);
                 if ($extracted !== '') {
                     return new ResolvedCounterparty(mb_substr($extracted, 0, 64), 2);
@@ -195,5 +242,47 @@ class Resolver
         }
 
         return null;
+    }
+
+    /**
+     * Collapse a BCP direct-debit line to its merchant name only, dropping
+     * the customer reference + creditor identifiers. Returns null if the
+     * input is not a DD line, or doesn't contain a numeric reference (in
+     * which case generic DD prefix stripping handles it).
+     */
+    private function extractFromDdWithReference(string $text): ?string
+    {
+        if (preg_match(self::BCP_DD_WITH_REFERENCE_PATTERN, $text, $m) !== 1) {
+            return null;
+        }
+        // Strip trailing punctuation (BCP's "EDP COMERCIAL-" hyphen artifact).
+        $merchant = rtrim(trim($m['merchant']), " \t\n\r\0\x0B-_.,;:");
+
+        return $merchant !== '' ? $merchant : null;
+    }
+
+    /**
+     * Normalise BCP ATM withdrawals to "ATM <location>" so every cash
+     * withdrawal in a city aggregates onto one YNAB payee. Falls back to
+     * the bare "ATM" label when the line starts with "LEV ATM" but the
+     * shape doesn't match the location-extraction pattern. Returns null
+     * for non-ATM lines so the caller continues with normal prefix/suffix
+     * stripping.
+     */
+    private function extractFromLevAtm(string $text): ?string
+    {
+        if (preg_match('/^LEV\s+ATM\b/i', $text) !== 1) {
+            return null;
+        }
+        if (preg_match(self::BCP_LEV_ATM_PATTERN, $text, $m) === 1) {
+            // Collapse internal whitespace runs so "VILA  NOVA" becomes
+            // "VILA NOVA" — same physical place, one YNAB payee.
+            $location = trim((string) preg_replace('/\s+/', ' ', $m['location']));
+            if ($location !== '') {
+                return 'ATM '.$location;
+            }
+        }
+
+        return 'ATM';
     }
 }

@@ -1,5 +1,111 @@
 # Latest task summary
 
+## Counterparty resolver — BCP edge cases (DD trailing references, PAG BXVAL, LEV ATM)
+
+### What changed
+
+- `app/Services/Counterparty/Resolver.php` — three new BCP-specific
+  shape detectors plus one prefix pattern. Fixes payee aggregation
+  for direct debits, Via Verde tolls, and ATM withdrawals.
+
+  - **DD direct debits**: new `extractFromDdWithReference()` cuts at
+    the trailing 8+ digit customer reference (with an optional
+    one-word alpha sub-product token between the reference and the
+    creditor id), dropping the reference and the PT/DI creditor
+    identifier. Concrete example: `DD GIN CLUBE PORT 00335110554
+    PT22100415` → `GIN CLUBE PORT` (was: full string, breaking
+    aggregation). Trailing punctuation on the merchant (BCP's
+    `EDP COMERCIAL-` artifact) is also trimmed. The merchant
+    capture is non-digit (`[^\d]+?`) and the reference threshold
+    is 8+ digits so descriptors that embed numbers themselves
+    (e.g. `DD ACME 2024 PT12345678`, `DD GYM 1234 PREMIUM 000123
+    PT12345678`) fall through to plain DD prefix-stripping rather
+    than being mis-cut. SUNSETFITGYM (real BCP merchant with a
+    4-digit ref) is accepted as collateral — its rows fall through
+    to the noisy form, which is strictly safer than over-merging
+    distinct year-suffixed merchants.
+  - **PAG BXVAL- (Via Verde tolls)**: new prefix pattern
+    `/^PAG\s+BXVAL-\s+\d+\s+/i` so `PAG BXVAL- 5962 VIAVERDE` →
+    `VIAVERDE`.
+  - **LEV ATM (ATM withdrawals)**: new `extractFromLevAtm()` with
+    a location-extraction regex. `LEV ATM 5962 703   LISBOA
+    Mario Nunes E` → `ATM LISBOA`. Cardholder echo is dropped — it's
+    BCP echoing the account holder, not a real counterparty.
+    Defensive fallback: lines starting with `LEV ATM` that don't
+    fit the location-extraction shape collapse to bare `ATM`.
+
+  The two new shape detectors run **before** the existing structured-
+  CSV (ING RO) extraction and generic prefix-stripping path because
+  their cleanup is destructive and shape-aware.
+
+- `tests/Unit/Services/Counterparty/ResolverTest.php` — 16 new
+  unit tests. Real-data fixtures from the operator's BCP
+  transactions: GIN CLUBE PORT, NOS Comunicaco, OCIDENTAL/MEDIS
+  with DI-prefixed identifier (plus an accented MÉDIS variant),
+  EDP COMERCIAL with hyphen artifact, the PAG BXVAL Via Verde
+  line, and both LEV ATM branches (with-location and bare-
+  fallback) including a multi-word location with internal doubled
+  spaces. Regression fixtures cover the false-positive shapes
+  surfaced across six codex review rounds: DD without creditor-id
+  suffix, DD with embedded year/plan codes, DD with numeric
+  intermediate token, DD with short reference directly before the
+  creditor id, and the SUNSETFITGYM trade-off documenting the
+  4-digit-ref fall-through.
+
+### Assumptions made
+
+- **EB lookback cap is 90 days for BCP**: confirmed empirically.
+  Bumping `banks.sync_lookback_days` to 730 then 180 both returned
+  HTTP 422 from EB; 90 succeeded. PSD2 mandates 90 days post-
+  consent without re-auth, and BCP doesn't extend that. The
+  337-row dataset is therefore the full available window.
+- **`dedup_hash` is independent of `counterparty_name`**: confirmed
+  via the `CounterpartyRecomputeCommand` docblock. The hash uses
+  `creditor.name` / `debtor.name` from `raw_payload`, not the
+  Resolver's L2 remittance extraction. Tuning the L2 path
+  doesn't shift dedup hashes for existing rows.
+- **All BCP data lands at level 2**: 337/337 rows resolve at L2
+  because BCP doesn't populate `creditor.name` / `debtor.name`.
+  The new detectors operate exclusively in the L2 path.
+- **Production EB session timezone is UTC**: per CLAUDE.md.
+
+### Blast radius
+
+- **`spendula:sync` path**: every fresh transaction gets the new
+  resolver. Rows re-fetched within the 90-day window get
+  re-resolved on update — observed: a fresh sync against the
+  pre-existing dataset produced `inserted=0 updated=18 deduped=297`,
+  with the 18 updates rewriting `counterparty_name` in-place
+  via the new resolver.
+- **`spendula:counterparty:recompute --bank=bcp`**: applied to
+  the existing 337-row BCP dataset, changed the one row the
+  sync re-fetch hadn't already updated. Distinct BCP payee count
+  is now 143; `GIN CLUBE PORT` aggregates 4 transactions, etc.
+- **No effect on dedup**: `dedup_hash` derives from raw EB
+  fields, not resolver output.
+- **No effect on YNAB push**: push reads `counterparty_name` as
+  the YNAB payee. After recompute, every GIN CLUBE PORT DD
+  lands on one YNAB payee instead of one-per-month.
+- **No effect on existing tests**: full suite 241/241 (16 new,
+  all green); PHPStan level 8 clean (`--memory-limit=1G`).
+
+### Open threads
+
+- **Other PT banks may share BCP shapes**: patterns match the
+  literal `DD `, `LEV ATM`, and `PAG BXVAL-` prefixes, which are
+  BCP-specific. If another PT bank uses similar shapes with
+  different prefixes those won't be recognised — add patterns
+  when concrete data appears (CLAUDE.md "second concrete need"
+  rule).
+- **Multi-bank LEV ATM normalisation**: the `ATM` payee is
+  bank-agnostic by design — a Revolut withdrawal and a BCP
+  withdrawal both become `ATM <city>`. The bank is still
+  recoverable via `transactions.bank_account_id`.
+- **`test_level_2_strips_bcp_dd_prefix`** still asserts
+  `DD EDP COMERCIAL  16` → `EDP COMERCIAL  16` (reference too
+  short to trigger the new cut). Kept as a regression that
+  documents the `\d{4,}` threshold.
+
 ## GH issue #18 — Phase 4c: README + ops polish for v1 release
 
 ### What changed
