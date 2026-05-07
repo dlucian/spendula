@@ -1,0 +1,67 @@
+{
+  "name": "Revolut LT",
+  "description": "Cleanup rules for Revolut remittance shapes. Revolut puts most merchant detail into EB structured creditor/debtor fields, so L0/L1 carries the dominant load. The patterns here only target the L2 fall-through cases: card top-ups, certain card-payment merchant strings that embed a city or reference, and refund lines where the remittance is the only carrier.",
+  "rules": [
+    {
+      "name": "apple-pay-topup",
+      "description": "Apple Pay top-up: 'Apple Pay Top-Up by *NNNN'. The trailing '*NNNN' is the funding card's last-4 (a single card across all top-ups), so dropping it aggregates every top-up to one payee. Anchored to digits-only suffix to avoid matching free-form text that happens to start the same way.",
+      "pattern": "/^Apple Pay Top-Up by \\*\\d+\\s*$/iu",
+      "replacement": "Apple Pay Top-Up",
+      "tests": [
+        {"in": "Apple Pay Top-Up by *2798", "out": "Apple Pay Top-Up"},
+        {"in": "Apple Pay Top-Up by *0429", "out": "Apple Pay Top-Up"}
+      ]
+    },
+    {
+      "name": "card-kiwi-city-suffix",
+      "description": "www.kiwi.com card payment with a star-glued city tag: 'www.kiwi.com*BRNO'. Drop the city so all Kiwi.com card charges aggregate as one payee. Suffix is letters + hyphens (Unicode-aware via the /u flag) to cover diacritics ('ŁÓDŹ') and hyphenated city names ('RIO-DE-JANEIRO'). Stays restrictive enough to leave star-glued numeric references alone (those would be a different shape).",
+      "pattern": "/^(www\\.kiwi\\.com)\\*[\\p{L}-]+\\s*$/iu",
+      "replacement": "$1",
+      "tests": [
+        {"in": "www.kiwi.com*BRNO", "out": "www.kiwi.com"},
+        {"in": "www.kiwi.com*PRAHA", "out": "www.kiwi.com"},
+        {"in": "www.kiwi.com*ŁÓDŹ", "out": "www.kiwi.com"},
+        {"in": "www.kiwi.com*RIO-DE-JANEIRO", "out": "www.kiwi.com"}
+      ]
+    },
+    {
+      "name": "refund-from-kiwi-card",
+      "description": "Refund of a www.kiwi.com card payment: 'Refund from www.kiwi.com*<city>'. The rule engine is first-match-wins, so we need a dedicated rule for refunds wrapping the noisy Kiwi card shape — otherwise the generic refund-from-merchant rule strips only the prefix and leaves the dirty city tag, breaking purchase/refund aggregation. Must run before refund-from-merchant.",
+      "pattern": "/^Refund from\\s+(www\\.kiwi\\.com)\\*[\\p{L}-]+\\s*$/iu",
+      "replacement": "$1",
+      "tests": [
+        {"in": "Refund from www.kiwi.com*BRNO", "out": "www.kiwi.com"},
+        {"in": "Refund from www.kiwi.com*ŁÓDŹ", "out": "www.kiwi.com"}
+      ]
+    },
+    {
+      "name": "refund-from-kiwi-legal-name",
+      "description": "Refund where Revolut emits the Kiwi legal entity name instead of the domain: 'Refund from Kiwi.com s.r.o.'. Canonicalize to 'www.kiwi.com' so it aggregates with the card-side card-kiwi-city-suffix output. Without this rule the refund-from-merchant fallback would produce 'Kiwi.com s.r.o.', splitting one merchant across two YNAB payees. Must run before refund-from-merchant.",
+      "pattern": "/^Refund from\\s+Kiwi\\.com\\s+s\\.r\\.o\\.?\\s*$/iu",
+      "replacement": "www.kiwi.com",
+      "tests": [
+        {"in": "Refund from Kiwi.com s.r.o.", "out": "www.kiwi.com"},
+        {"in": "Refund from Kiwi.com s.r.o", "out": "www.kiwi.com"}
+      ]
+    },
+    {
+      "name": "refund-from-apple-pay-topup",
+      "description": "Refund of an Apple Pay top-up: 'Refund from Apple Pay Top-Up by *NNNN'. Rare but possible (Revolut reverses a top-up). Same first-match-wins reason as refund-from-kiwi-card: needs to run before the generic refund-from-merchant so the card last-4 doesn't survive the strip.",
+      "pattern": "/^Refund from\\s+Apple Pay Top-Up by \\*\\d+\\s*$/iu",
+      "replacement": "Apple Pay Top-Up",
+      "tests": [
+        {"in": "Refund from Apple Pay Top-Up by *2798", "out": "Apple Pay Top-Up"}
+      ]
+    },
+    {
+      "name": "refund-from-merchant",
+      "description": "Generic refund line where the remittance is the only carrier of the original merchant: 'Refund from <merchant>'. Strip the 'Refund from' prefix so the refund row aggregates with the original purchase under the same payee in YNAB. Captures everything after the prefix verbatim — Revolut's merchant strings here are already clean legal names. Must run AFTER the more specific refund-from-* rules so wrapped noisy shapes don't leak through unchanged.",
+      "pattern": "/^Refund from\\s+(.+?)\\s*$/iu",
+      "replacement": "$1",
+      "tests": [
+        {"in": "Refund from Booking.com", "out": "Booking.com"},
+        {"in": "Refund from Lufthansa AG", "out": "Lufthansa AG"}
+      ]
+    }
+  ]
+}
