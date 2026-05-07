@@ -174,7 +174,7 @@ class MatchUpdateOrInsert
             : 'BOOK';
 
         $rawCounterparty = $this->extractRawCounterparty($ebTransaction);
-        $resolved = $this->resolver->resolve($ebTransaction);
+        $resolved = $this->resolver->resolve($ebTransaction, $account->bank_slug);
 
         $remittance = null;
         if (isset($ebTransaction['remittance_information']) && is_array($ebTransaction['remittance_information'])) {

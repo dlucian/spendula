@@ -1,5 +1,55 @@
 # Spendula commands — local decision log
 
+## 2026-05-06 — JSON-driven counterparty rule engine over hard-coded patterns
+
+**Decision:** Move bank-specific counterparty cleanup patterns out of
+`Resolver.php` constants and shape-extractor methods into per-bank
+JSON rule files at `config/counterparty-rules-available/<bank>.json`.
+Operators enable rules via symlinks in
+`config/counterparty-rules-enabled/<bank>.json` (Apache mods-style).
+The `Resolver` keeps L0/L1/L3/L4 logic in code; L2 delegates to a new
+`RuleEngine` that consumes `Rule[]` loaded by `RuleLoader`.
+
+**Alternatives considered:**
+- Keep patterns in code (status quo). Rejected: each new noisy string
+  required a code change + PR + codex review round; rule changes
+  carry the full weight of code-review ceremony for what is
+  essentially configuration data.
+- Store rules in the database. Rejected: rules need to ship with the
+  repo so a fresh clone gets a working ruleset; DB rows aren't
+  portable, can't be code-reviewed, and don't have git history.
+- Single combined config file. Rejected: would grow unbounded as
+  more banks add rules; per-bank file enables the symlink-based
+  enable/disable model.
+- One file per rule. Rejected: explicit ordering (specific-first)
+  becomes harder to reason about across files; Apache "site config"
+  precedent uses one file per logical unit.
+
+**Constraints that drove the choice:**
+- Open-source: a Danish operator forking the repo doesn't carry the
+  Portuguese-bank-specific patterns; they ship rules for their banks.
+- Operator workflow: seeing a noisy payee in `spendula:review` should
+  let the operator add a cleanup rule in seconds without a code
+  change. The `spendula:counterparty:rules:add --from-transaction=<id>`
+  workflow is built around this.
+- Test discipline: every rule must ship with a fixture; an auto-
+  discovered PHPUnit test (`RuleFixtureSelfTest`) runs them all on
+  every CI invocation, catching regressions alongside code tests.
+
+**Consequences:**
+- Easier: adding a cleanup rule for a new noisy string is one
+  artisan command. Sharing rules between operators is a JSON paste.
+  Forks ship empty rules and build their own library.
+- Harder: bug surface is wider — a malformed regex in a hand-edited
+  file is a load-time fatal (acceptable; the alternative is silent
+  drift). Operators must understand PCRE syntax to author rules
+  (mitigated by the `--from-transaction` interactive flow which
+  validates the fixture before saving).
+- Migration: PR #25's BCP shape detectors and PR #26's trailing-
+  reference + embedded-id patterns all became rule entries in
+  `bcp.json`. The `Resolver` shrunk from ~290 to ~115 lines.
+
+
 Decisions specific to artisan commands under `App\Console\Commands\Spendula\`.
 Repo-wide decisions live in `SUMMARY.md` and `app/Services/Sync/DECISIONS.md`.
 

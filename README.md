@@ -69,6 +69,16 @@ chmod 600 storage/keys/enablebanking.key
 
 A green `php artisan test` after the migrate step confirms the toolchain is healthy before you start chasing EB / YNAB credential issues. The remaining `.env` keys (EB app id, YNAB PAT, YNAB plan id) only matter once you reach the sandbox or production walkthroughs below.
 
+### Counterparty cleanup rules
+
+Spendula ships with bank-specific cleanup rules at `config/counterparty-rules-available/`. For these to take effect during sync, enable them once after a fresh clone:
+
+```bash
+php artisan spendula:counterparty:rules:enable --all
+```
+
+This creates symlinks in `config/counterparty-rules-enabled/` (gitignored). To opt out of a specific bank's rules, run `php artisan spendula:counterparty:rules:disable <bank>`. To verify everything is wired up correctly: `php artisan spendula:counterparty:rules:test`.
+
 The one HTTP route (the EB OAuth callback) runs via `php artisan serve`:
 
 ```bash
@@ -438,6 +448,10 @@ Implemented:
 | `spendula:status [--include-mock]` | Dashboard: consent, queued counts, last sync/push, push-stuck warnings. Exits 1 on red consent, push-stuck, or stale-sync. |
 | `spendula:tracking:snapshot [--account=id] [--dry-run]` | Push tracking-account balance snapshots to YNAB. |
 | `spendula:counterparty:recompute [--bank=<slug>] [--dry-run]` | Rerun the counterparty resolution ladder over every transaction (optionally scoped to one bank slug); useful after upgrading the heuristics in `app/Services/Counterparty/`. |
+| `spendula:counterparty:rules:add [--bank=<slug>] [--from-transaction=<id>]` | Interactive: add a counterparty cleanup rule. Validates regex + fixture before saving. With `--from-transaction`, pulls a real remittance and previews impact on existing transactions. |
+| `spendula:counterparty:rules:enable [<bank>] [--all]` | Enable a bank's cleanup rules by creating a symlink in `config/counterparty-rules-enabled/`. Pass `--all` to enable every available rule file at once (recommended after a fresh clone). |
+| `spendula:counterparty:rules:disable <bank>` | Disable a bank's cleanup rules (removes the symlink; doesn't delete the rule file). |
+| `spendula:counterparty:rules:test [--bank=<slug>]` | Run every rule fixture in `config/counterparty-rules-available/`. Same logic as the auto-discovered phpunit test. |
 
 Phase-2+ stubs (ship as "not yet implemented"):
 

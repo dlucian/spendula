@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Services\Counterparty\Rules\RuleLoader;
 use App\Services\EnableBanking\Client as EnableBankingClient;
 use App\Services\EnableBanking\Jwt as EnableBankingJwt;
 use App\Services\ExchangeRates\FrankfurterClient;
@@ -15,6 +16,11 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->singleton(
+            RuleLoader::class,
+            fn () => new RuleLoader(base_path('config/counterparty-rules-enabled')),
+        );
+
         $this->app->singleton(EnableBankingJwt::class, fn () => EnableBankingJwt::fromConfig());
 
         $this->app->singleton(

@@ -9,6 +9,8 @@ use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\Transaction;
 use App\Services\Counterparty\Resolver;
+use App\Services\Counterparty\Rules\RuleEngine;
+use App\Services\Counterparty\Rules\RuleLoader;
 use App\Services\Sync\ApplyOutcome;
 use App\Services\Sync\MatchUpdateOrInsert;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -47,7 +49,10 @@ class MatchUpdateOrInsertTest extends TestCase
             'last_seen_at' => Carbon::now(),
         ]);
 
-        $this->apply = new MatchUpdateOrInsert(new Resolver);
+        $this->apply = new MatchUpdateOrInsert(new Resolver(
+            new RuleLoader(base_path('config/counterparty-rules-enabled')),
+            new RuleEngine,
+        ));
     }
 
     /** @return array<string, mixed> */

@@ -1,0 +1,155 @@
+{
+  "name": "Millennium BCP (Portugal)",
+  "description": "Cleanup rules for Millennium BCP remittance shapes observed in real EB production data. Rules are ordered most-specific first; first terminal match wins.",
+  "rules": [
+    {
+      "name": "lev-atm-with-location",
+      "description": "BCP ATM withdrawal — extract location, drop cardholder echo. Cardholder gap is >=4 spaces; internal location double-spaces (VILA  NOVA) collapsed.",
+      "pattern": "/^LEV\\s+ATM\\s+\\d+\\s+\\d+\\s+(.+?)\\s{4,}\\S.*$/iu",
+      "replacement": "ATM $1",
+      "post": ["collapse"],
+      "tests": [
+        {"in": "LEV ATM 5962 703   LISBOA        Mario Nunes E", "out": "ATM LISBOA"},
+        {"in": "LEV ATM 5962 703   VILA  NOVA        Mario Nunes E", "out": "ATM VILA NOVA"}
+      ]
+    },
+    {
+      "name": "lev-atm-fallback",
+      "description": "Line starts with LEV ATM but doesn't fit the location-extraction shape — collapse to bare ATM rather than leaving the noisy line.",
+      "pattern": "/^LEV\\s+ATM\\b.*$/i",
+      "replacement": "ATM",
+      "tests": [
+        {"in": "LEV ATM 5962", "out": "ATM"}
+      ]
+    },
+    {
+      "name": "dd-with-reference",
+      "description": "BCP direct debit: 'DD <merchant> <8+ digit ref> [<alpha sub-product>] (PT|DI)<id>'. Merchant is non-digit so descriptors that embed numbers (DD ACME 2024 PT...) fall through to dd-fallthrough rather than mis-cutting.",
+      "pattern": "/^DD\\s+(?P<merchant>[^\\d]+?)\\s+\\d{8,}(?:\\s+\\p{L}+)?\\s+(?:PT|DI)\\d{6,}\\s*$/iu",
+      "replacement": "$1",
+      "post": ["trim"],
+      "tests": [
+        {"in": "DD GIN CLUBE PORT 00335110554    PT22100415", "out": "GIN CLUBE PORT"},
+        {"in": "DD NOS Comunicaco 06258979526    PT20100839", "out": "NOS Comunicaco"},
+        {"in": "DD OCIDENTAL 00346849108 MEDIS       DI72078874", "out": "OCIDENTAL"},
+        {"in": "DD OCIDENTAL 00346849108 MÉDIS       DI72078874", "out": "OCIDENTAL"},
+        {"in": "DD EDP COMERCIAL- 16010014044135 PT34100781", "out": "EDP COMERCIAL"}
+      ]
+    },
+    {
+      "name": "dd-short-reference",
+      "description": "BCP DD line that has a PT/DI authorization id but no 8+ digit booking reference (so dd-with-reference rejected it). Strip the PT/DI tail and collapse internal whitespace so short merchant codes (SUNSETFITGYM 2010) aggregate cleanly.",
+      "pattern": "/^DD\\s+(.+?)\\s+(?:PT|DI)\\d{6,}\\s*$/iu",
+      "replacement": "$1",
+      "post": ["collapse"],
+      "tests": [
+        {"in": "DD SUNSETFITGYM   2010           PT81118656", "out": "SUNSETFITGYM 2010"},
+        {"in": "DD ACME 2024 PT12345678", "out": "ACME 2024"}
+      ]
+    },
+    {
+      "name": "dd-fallthrough",
+      "description": "DD line that didn't match either reference rule (no PT/DI tail at all). Strip 'DD ' prefix, preserve the rest verbatim.",
+      "pattern": "/^DD\\s+(.+)$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "DD EDP COMERCIAL  16", "out": "EDP COMERCIAL  16"}
+      ]
+    },
+    {
+      "name": "compra-le-fournil-d",
+      "description": "BCP-truncated French bakery name (LE FOURNIL D'Antoine) where COMPRA descriptor leaves an ANT-prefixed booking reference. Strip it so the merchant aggregates.",
+      "pattern": "/^COMPRA\\s+\\d{3,5}\\s+(LE\\s+FOURNIL\\s+D)\\s+[A-Z]+\\d+\\s+CONTACTLESS\\s*$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "COMPRA 5962 LE FOURNIL D ANT2136790 CONTACTLESS", "out": "LE FOURNIL D"}
+      ]
+    },
+    {
+      "name": "compra-air-serbia",
+      "description": "AIR SERBIA flight booking via COMPRA — drop the embedded booking reference (single uppercase letter + 8+ digits) so all flights aggregate to one payee.",
+      "pattern": "/^COMPRA\\s+\\d{3,5}\\s+(AIR\\s+SERBIA)\\s+[A-Z]\\d{8,}\\s+(.+?)(?:\\s+CONTACTLESS)?\\s*$/i",
+      "replacement": "$1 $2",
+      "tests": [
+        {"in": "COMPRA 5962 AIR SERBIA A21296337235 Belgrade RS", "out": "AIR SERBIA Belgrade RS"}
+      ]
+    },
+    {
+      "name": "compra-bolt",
+      "description": "BOLT ride share — the booking reference (single uppercase letter + 6+ digits) is concatenated directly to the 'BOLT.EU' merchant tag with no separator. Drop the ref so all rides aggregate to one payee.",
+      "pattern": "/^COMPRA\\s+\\d{3,5}\\s+(BOLT\\.EU)[A-Z]\\d{6,}\\s+(.+?)(?:\\s+CONTACTLESS)?\\s*$/i",
+      "replacement": "$1 $2",
+      "tests": [
+        {"in": "COMPRA 9800 BOLT.EUO2604111313 Tallinn EE", "out": "BOLT.EU Tallinn EE"},
+        {"in": "COMPRA 9800 BOLT.EUO2604111736 Tallinn EE", "out": "BOLT.EU Tallinn EE"}
+      ]
+    },
+    {
+      "name": "compra-card-purchase",
+      "description": "BCP card purchase: 'COMPRA NNNN <merchant> [CONTACTLESS]'. NNNN is the last-4 of the card or a category code (5962, 9800).",
+      "pattern": "/^COMPRA\\s+\\d{3,5}\\s+(.+?)(?:\\s+CONTACTLESS)?\\s*$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "COMPRA 9800 Vinted Vilnius LT", "out": "Vinted Vilnius LT"},
+        {"in": "COMPRA 5962 CONTINENTE LISBOA PT", "out": "CONTINENTE LISBOA PT"},
+        {"in": "COMPRA 9800 MACAS DE ADAO LISBOA PT CONTACTLESS", "out": "MACAS DE ADAO LISBOA PT"}
+      ]
+    },
+    {
+      "name": "trf-seguro-viagem",
+      "description": "BCP-routed travel insurance via TRF P — bank appends an AV booking reference per policy. Strip it so all policies aggregate to one payee.",
+      "pattern": "/^TRF\\.?\\s+P\\s+(Seguro\\s+Viagem(?:\\s+\\S+)*?)\\s+AV\\d+\\s*$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "TRF P  Seguro Viagem ON OFF AV787342440282", "out": "Seguro Viagem ON OFF"}
+      ]
+    },
+    {
+      "name": "trf-person",
+      "description": "BCP transfer to/from person: 'TRF <variant> <name>'. Variants: DE (incoming), MB WAY P (mobile pay), P (outgoing), P O (outgoing alternate).",
+      "pattern": "/^TRF\\.?\\s+(?:DE|MB\\s+WAY\\s+P|P\\s+O|P)\\s+(.+)$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "TRF DE Apparte - Emergency fund", "out": "Apparte - Emergency fund"},
+        {"in": "TRF MB WAY P  SONAM MALLA", "out": "SONAM MALLA"},
+        {"in": "TRF. P O NIKOLAY SAVCHENKO", "out": "NIKOLAY SAVCHENKO"}
+      ]
+    },
+    {
+      "name": "pagserv-empresa-portuguesa-das",
+      "description": "BCP service payment to Empresa Portuguesa Das (postal/telecom) — strip service code + phone-number tail.",
+      "pattern": "/^PAGSERV\\s+(EMPRESA\\s+PORTUGUESA\\s+DAS).*$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "PAGSERV EMPRESA PORTUGUESA DAS 20811 962735560", "out": "EMPRESA PORTUGUESA DAS"}
+      ]
+    },
+    {
+      "name": "pagserv-generic",
+      "description": "Generic BCP service payment — strip 'PAGSERV ' prefix, leave the rest.",
+      "pattern": "/^PAGSERV\\s+(.+)$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "PAGSERV CTT EXPRESSO", "out": "CTT EXPRESSO"}
+      ]
+    },
+    {
+      "name": "pag-bxval-via-verde",
+      "description": "BCP toll/parking payment via the Via Verde tag system — strip 'PAG BXVAL- NNNN ' prefix.",
+      "pattern": "/^PAG\\s+BXVAL-\\s+\\d+\\s+(.+)$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "PAG BXVAL- 5962 VIAVERDE", "out": "VIAVERDE"}
+      ]
+    },
+    {
+      "name": "com-man-conta-monthly-fee",
+      "description": "BCP monthly account-maintenance fee with trailing 6-digit period code (MMyyyy). Drop the period so all months aggregate.",
+      "pattern": "/^(COM\\.MAN\\.CONTA[^\\d]*?)\\s+\\d{6}\\s*$/i",
+      "replacement": "$1",
+      "tests": [
+        {"in": "COM.MAN.CONTA PACOTE CLIENTE FREQUENTE   022026", "out": "COM.MAN.CONTA PACOTE CLIENTE FREQUENTE"}
+      ]
+    }
+  ]
+}

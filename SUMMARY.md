@@ -1,5 +1,92 @@
 # Latest task summary
 
+## Counterparty rule engine — JSON-driven, per-bank cleanup rules
+
+### What changed
+
+- Bank-specific cleanup patterns moved out of `Resolver.php` and
+  into per-bank JSON rule files at
+  `config/counterparty-rules-available/<bank>.json`. Operators
+  enable rules via symlinks in
+  `config/counterparty-rules-enabled/<bank>.json` (Apache mods-style).
+- New `RuleEngine` + `RuleLoader` + `Rule` / `RuleFixture` value
+  objects + `PostHook` finalizers under
+  `app/Services/Counterparty/Rules/`.
+- Resolver shrunk from ~290 lines to ~115 — L0/L1/L3/L4 ladder
+  stays in code (universal); L2 delegates to the rule engine
+  with the transaction's bank slug.
+- Two rule files shipped: `bcp.json` (13 rules covering BCP's
+  COMPRA / TRF / DD / PAGSERV / PAG BXVAL / LEV ATM /
+  COM.MAN.CONTA shapes plus operator-specific AIR SERBIA, Seguro
+  Viagem, LE FOURNIL D patterns) and `ing-ro.json` (1 rule for
+  ING RO Business structured remittance).
+- Four CLI commands:
+  `spendula:counterparty:rules:add` (interactive; supports
+  `--from-transaction=<id>` to pull a real remittance, auto-derive
+  fixture output, and preview impact on existing transactions
+  before saving),
+  `spendula:counterparty:rules:enable <bank>` (symlink),
+  `spendula:counterparty:rules:disable <bank>` (unlink),
+  `spendula:counterparty:rules:test [--bank=<slug>]` (standalone
+  fixture runner, parallel of the auto-discovered phpunit test).
+- Auto-discovered `RuleFixtureSelfTest` walks every rule's fixtures
+  in every available rule file; runs as part of `vendor/bin/phpunit`.
+- Supersedes (and closes) PR #26 — its trailing-reference and
+  embedded-id patterns are reframed as data rules in `bcp.json`.
+
+### Assumptions made
+
+- **Rule files at `config/counterparty-rules-available/`**: this
+  directory is committed; new operators get the shipped rule
+  library on checkout. The `enabled/` directory contains gitignored
+  symlinks per operator preference.
+- **Bank slug is per-transaction**: derived from
+  `Transaction::bankAccount::bank_slug`. The Resolver accepts an
+  optional `?string $bankSlug` parameter; null means no rules
+  apply (trimmed remittance returned as-is).
+- **`dedup_hash` independence**: unchanged from prior work — the
+  hash uses raw EB fields, not the resolver's L2 output. Rule
+  changes don't shift dedup hashes for existing rows.
+- **Tests required for every rule**: validated at add-time (the
+  CLI refuses to save a rule whose fixture doesn't pass) and at
+  load-time (`RuleLoader` throws on empty `tests` array).
+
+### Blast radius
+
+- **`spendula:sync` path**: `MatchUpdateOrInsert` now passes
+  `$bankAccount->bank_slug` to the resolver. The resolver looks up
+  rules for that bank and applies the engine. Behavior on shipped
+  banks (bcp, ing-ro) is preserved.
+- **`spendula:counterparty:recompute --bank=bcp`** (dry-run on
+  the operator's 337-row dataset) reports
+  `name_changed=0` — the rule engine reproduces the prior
+  code-based resolver output exactly (including the operator's
+  PR #26-era cleanups for AIR SERBIA, Seguro Viagem, and LE
+  FOURNIL D).
+- **No effect on `dedup_hash`**: same as prior PRs.
+- **No effect on existing tests**: full suite 282/282 (incl. 23
+  rule fixtures via the auto-discovered self-test, 6 add-command
+  tests, 6 enable/disable tests, 3 test-command tests). PHPStan
+  level 8 clean.
+
+### Open threads
+
+- **`_generic.json` for cross-bank cleanup**: deferred to v2.
+  Per-bank rules cover all observed shapes today. If a truly
+  cross-bank pattern appears, add a `_generic.json` (loaded for
+  every transaction).
+- **Rule shadowing detection**: deferred to v2. Operators rely on
+  manual ordering (most-specific-first) plus the
+  `--from-transaction` preview to spot ordering mistakes before
+  saving.
+- **`rules:list`, `rules:edit`, `rules:remove` CLI commands**:
+  deferred to v2. JSON files are hand-editable; `phpunit` catches
+  hand-edit breakage.
+- **Bulk rule sharing**: deferred. The committed `available/`
+  directory already serves as the canonical shared library; any
+  operator adding a rule via `rules:add` can `git diff` to send
+  the new rule upstream as a PR.
+
 ## Counterparty resolver — BCP edge cases (DD trailing references, PAG BXVAL, LEV ATM)
 
 ### What changed

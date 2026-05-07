@@ -39,7 +39,7 @@ class CounterpartyRecomputeCommand extends Command
         $bankSlug = (string) $this->option('bank');
         $dryRun = (bool) $this->option('dry-run');
 
-        $query = Transaction::query()->orderBy('id');
+        $query = Transaction::query()->with('bankAccount')->orderBy('id');
         if ($bankSlug !== '') {
             $bankAccountIds = BankAccount::query()->where('bank_slug', $bankSlug)->pluck('id');
             if ($bankAccountIds->isEmpty()) {
@@ -62,7 +62,8 @@ class CounterpartyRecomputeCommand extends Command
                 $scanned++;
                 $beforeLevels[$tx->counterparty_resolution_level] = ($beforeLevels[$tx->counterparty_resolution_level] ?? 0) + 1;
 
-                $resolved = $resolver->resolve($tx->raw_payload);
+                $txBankSlug = $tx->bankAccount?->bank_slug;
+                $resolved = $resolver->resolve($tx->raw_payload, $txBankSlug);
 
                 $afterLevels[$resolved->level] = ($afterLevels[$resolved->level] ?? 0) + 1;
 

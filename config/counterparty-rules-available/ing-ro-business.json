@@ -1,0 +1,17 @@
+{
+  "name": "ING Bank Romania (Business)",
+  "description": "Cleanup rules for ING RO Business card-purchase remittance, which is a structured CSV-like string.",
+  "rules": [
+    {
+      "name": "structured-card-purchase",
+      "description": "ING RO Business card purchase: 'Card number, **** XXXX, Transaction at, MERCHANT, Authorization date, ...'. Capture the merchant, drop the surrounding metadata.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(?P<merchant>.+?)(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "$1",
+      "post": ["trim"],
+      "tests": [
+        {"in": "Card number, **** 0429, Transaction at, GITHUB, INC.  US  GITHUB.COM, Authorization date, 24-04-2026, Authorization number, 071280, Amount, 4,00  USD, Settlement amount, 3,43 EUR", "out": "GITHUB, INC.  US  GITHUB.COM"},
+        {"in": "Card number, **** 0429, Transaction at, ELEVENLABS.IO  US  ELEVENLABS.IO", "out": "ELEVENLABS.IO  US  ELEVENLABS.IO"}
+      ]
+    }
+  ]
+}
