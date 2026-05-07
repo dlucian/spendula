@@ -1,16 +1,132 @@
 {
-  "name": "ING Bank Romania (Business)",
-  "description": "Cleanup rules for ING RO Business card-purchase remittance, which is a structured CSV-like string.",
+  "name": "ING Bank Romania",
+  "description": "Cleanup rules for ING Romania remittance shapes. ING uses a structured CSV-like envelope where each field is 'Key, value, Key, value, ...'. The merchant/counterparty lives in different positions depending on the transaction type, so each rule pins a specific shape. Same envelope on business and personal accounts; this file is shared by both bank slugs via symlink.",
   "rules": [
     {
+      "name": "card-twilio",
+      "description": "Twilio card transaction — booking reference (uppercase alphanumeric, 8+ chars) is appended after the 'Twilio' merchant tag with a space. Drop the ref so per-API-call charges aggregate to one payee. Country + support phone tail is kept (it's identical across all Twilio rows). Distinct from 'WWW.TWILIO.COM IE DUBLIN' which has no embedded ref and is handled by the generic card-purchase rule.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(Twilio)\\s+[A-Z0-9]{8,}\\s+(.+?)(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "$1 $2",
+      "post": ["trim", "collapse"],
+      "tests": [
+        {"in": "Card number, **** 0429, Transaction at, Twilio JQKCHRPJMZTSC569  US  844-8144627, Authorization date, 11-03-2026, Authorization number, 044018, Amount, 50,00  USD, Settlement amount, 43,46 EUR", "out": "Twilio US 844-8144627"}
+      ]
+    },
+    {
+      "name": "card-oneprovider",
+      "description": "OneProvider card transaction — trailing digit run (their support phone, identical across all rows) is appended after the country code. Drop it; keep merchant + country.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(ONEPROVIDER\\s+\\S+)\\s+\\d{6,}\\s*(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "$1",
+      "post": ["trim", "collapse"],
+      "tests": [
+        {"in": "Card number, **** 0429, Transaction at, ONEPROVIDER  CA  5142860253, Authorization date, 20-03-2026, Authorization number, 001761, Amount, 10,00  USD, Settlement amount, 8,68 EUR", "out": "ONEPROVIDER CA"}
+      ]
+    },
+    {
+      "name": "card-audible",
+      "description": "Audible card transaction — Amazon-style per-order reference glued to the merchant tag with a '*' separator (Audible*GQ9YN7PV3). Drop the ref so all Audible charges aggregate. Trailing 'US Amzn.com/bill' is identical across rows; keep it as-is.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(Audible)\\*[A-Z0-9]+\\s+(.+?)(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "$1 $2",
+      "post": ["trim", "collapse"],
+      "tests": [
+        {"in": "Card number, **** 0429, Transaction at, Audible*GQ9YN7PV3  US  Amzn.com/bill, Authorization date, 22-03-2026, Authorization number, 026216, Amount, 14,95  USD, Settlement amount, 12,97 EUR", "out": "Audible US Amzn.com/bill"},
+        {"in": "Card number, **** 0429, Transaction at, Audible*EN1PD6VI3  US  Amzn.com/bill, Authorization date, 22-04-2026, Authorization number, 565543, Amount, 14,95  USD, Settlement amount, 12,76 EUR", "out": "Audible US Amzn.com/bill"}
+      ]
+    },
+    {
+      "name": "card-amazon",
+      "description": "WWW.AMAZON card transaction — per-order reference glued to the merchant tag with a '*' separator (WWW.AMAZON*NW18Y2WK4). Drop the ref so all Amazon orders aggregate.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(WWW\\.AMAZON)\\*[A-Z0-9]+\\s+(.+?)(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "$1 $2",
+      "post": ["trim", "collapse"],
+      "tests": [
+        {"in": "Card number, **** 0429, Transaction at, WWW.AMAZON*NW18Y2WK4  LU  amzn.com/bill, Authorization date, 19-04-2026, Authorization number, 033623", "out": "WWW.AMAZON LU amzn.com/bill"},
+        {"in": "Card number, **** 0429, Transaction at, WWW.AMAZON*NW5XJ51B4  LU  amzn.com/bill, Authorization date, 15-04-2026, Authorization number, 887007", "out": "WWW.AMAZON LU amzn.com/bill"}
+      ]
+    },
+    {
       "name": "structured-card-purchase",
-      "description": "ING RO Business card purchase: 'Card number, **** XXXX, Transaction at, MERCHANT, Authorization date, ...'. Capture the merchant, drop the surrounding metadata.",
+      "description": "Card purchase: 'Card number, **** XXXX, Transaction at, MERCHANT, Authorization date, ...'. Capture the merchant; the trailing fields (authorization date / number / amount / settlement) are noise.",
       "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(?P<merchant>.+?)(?:,\\s*Authorization date,.*)?$/iu",
       "replacement": "$1",
       "post": ["trim"],
       "tests": [
         {"in": "Card number, **** 0429, Transaction at, GITHUB, INC.  US  GITHUB.COM, Authorization date, 24-04-2026, Authorization number, 071280, Amount, 4,00  USD, Settlement amount, 3,43 EUR", "out": "GITHUB, INC.  US  GITHUB.COM"},
         {"in": "Card number, **** 0429, Transaction at, ELEVENLABS.IO  US  ELEVENLABS.IO", "out": "ELEVENLABS.IO  US  ELEVENLABS.IO"}
+      ]
+    },
+    {
+      "name": "transfer-out-with-reference",
+      "description": "Outgoing transfer where the bank's reference number leads: 'Reference number, NNN, Beneficiary, NAME, To account, ...'. Capture the beneficiary; collapse internal multi-spaces (e.g. 'EXAMPLE COMPANY  SRL' → 'EXAMPLE COMPANY SRL') so the same legal entity aggregates as one payee.",
+      "pattern": "/^Reference number,\\s*\\S+,\\s*Beneficiary,\\s*(?P<name>.+?),\\s*To account,.*$/iu",
+      "replacement": "$1",
+      "post": ["trim", "collapse"],
+      "tests": [
+        {"in": "Reference number, 1317, Beneficiary, EXAMPLE COMPANY  SRL, To account, RO49EXAMPLEEXAMPLE000002, Details, transfer, Value date, 05-05-2026", "out": "EXAMPLE COMPANY SRL"},
+        {"in": "Reference number, 2728672605, Beneficiary, JANE DOE, To account, PT50EXAMPLEEXAMPLE0000001, Bank, BANCO COMERCIAL PORTUGUES, Details, avans, Value date, 06-05-2026", "out": "JANE DOE"},
+        {"in": "Reference number, 1313, Beneficiary, EXAMPLE COMPANY  SRL, To account, RO49EXAMPLEEXAMPLE000003, Amount, 16.563,69 RON, Rate, 5,01930", "out": "EXAMPLE COMPANY SRL"},
+        {"in": "Reference number, 2894652603, Beneficiary, Wise Europe SA, To account, BE49EXAMPLE00001, Bank, Transferwise Europe SA/NV, Details, P7293903, Value date, 06-03-2026", "out": "Wise Europe SA"}
+      ]
+    },
+    {
+      "name": "transfer-in-with-reference",
+      "description": "Incoming transfer: 'Reference number, NNN, Ordering party, NAME, From account, ...'. Capture the sender; collapse internal whitespace. Used for STRIPE settlements (the Message field carries a per-payout id, but Ordering party is constant) and recurring payroll/intercompany transfers.",
+      "pattern": "/^Reference number,\\s*\\S+,\\s*Ordering party,\\s*(?P<name>.+?),\\s*From account,.*$/iu",
+      "replacement": "$1",
+      "post": ["trim", "collapse"],
+      "tests": [
+        {"in": "Reference number, 6462372605, Ordering party, TEXTALK AB, From account, SE2850000000050598298428, Details, M1016, Value date, 05-05-2026, Message, qQHErjnTHBnavQ3A", "out": "TEXTALK AB"},
+        {"in": "Reference number, 9419, Ordering party, EXAMPLE COMPANY  SRL, From account, RO49EXAMPLEEXAMPLE000004, Amount, 3.300,00 EUR, Rate, 5,01930", "out": "EXAMPLE COMPANY SRL"},
+        {"in": "Reference number, 7786822604, Ordering party, STRIPE, From account, NL41CITI2032304805, Details, STRIPE, Value date, 20-04-2026, Message, STRIPE-MDOL5YZAMN9Z7FJFBOZNUXWJ4CRN", "out": "STRIPE"}
+      ]
+    },
+    {
+      "name": "beneficiary-first",
+      "description": "Transfer where the beneficiary leads (no Reference number prefix) and the reference number trails — common for tax / public-treasury (BUGETUL DE STAT) and accountant invoices: 'Beneficiary, NAME, To account, ..., Reference number, ...'.",
+      "pattern": "/^Beneficiary,\\s*(?P<name>.+?),\\s*To account,.*$/iu",
+      "replacement": "$1",
+      "post": ["trim", "collapse"],
+      "tests": [
+        {"in": "Beneficiary, BUGETUL DE STAT/27263785, To account, RO82TREZ6215503XXXXXXXXX, Bank, TREZORERII, Details, impozit pe profit trim.1 2026, Reference number, 946664581", "out": "BUGETUL DE STAT/27263785"},
+        {"in": "Beneficiary, SC A.M. CLAR-CONT SRL, To account, RO49EXAMPLEEXAMPLE000001, Bank, ING BANK BUCURESTI CENTRALA, Details, cv fact AM5249 din 3 apr 2026, Reference number, 1775574105259925106351", "out": "SC A.M. CLAR-CONT SRL"}
+      ]
+    },
+    {
+      "name": "fee-alerts-service",
+      "description": "Bundled fee line that begins with the alerts subscription: 'Alerts service monthly fee, 4, Account administration fee, 70'. Aggregate as 'Alerts service monthly fee'. Specific rule before fee-account-administration so the bundle isn't matched by the generic admin-fee rule.",
+      "pattern": "/^Alerts service monthly fee,.*$/iu",
+      "replacement": "Alerts service monthly fee",
+      "tests": [
+        {"in": "Alerts service monthly fee, 4, Account administration fee, 70", "out": "Alerts service monthly fee"}
+      ]
+    },
+    {
+      "name": "fee-transfer",
+      "description": "Bank fee line: 'Transfer fee, .96'. Drop the amount echo so all transfer fees aggregate to one payee in YNAB.",
+      "pattern": "/^Transfer fee,.*$/iu",
+      "replacement": "Transfer fee",
+      "tests": [
+        {"in": "Transfer fee, .96", "out": "Transfer fee"},
+        {"in": "Transfer fee, .98", "out": "Transfer fee"}
+      ]
+    },
+    {
+      "name": "fee-homebank-transfer",
+      "description": "Personal-account variant of the transfer fee: 'Fee for Transfer HomeBank, 5'. Same idea — drop the amount.",
+      "pattern": "/^Fee for Transfer HomeBank,.*$/iu",
+      "replacement": "Fee for Transfer HomeBank",
+      "tests": [
+        {"in": "Fee for Transfer HomeBank, 5", "out": "Fee for Transfer HomeBank"}
+      ]
+    },
+    {
+      "name": "fee-account-administration",
+      "description": "Bank fee line: 'Account administration fee, N'. Drop the amount echo.",
+      "pattern": "/^Account administration fee,.*$/iu",
+      "replacement": "Account administration fee",
+      "tests": [
+        {"in": "Account administration fee, 6", "out": "Account administration fee"},
+        {"in": "Account administration fee, 15", "out": "Account administration fee"}
       ]
     }
   ]
