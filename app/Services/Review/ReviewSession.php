@@ -216,8 +216,9 @@ class ReviewSession
                         break;
 
                     case 'q':
-                        $stats['quit'] = true;
-
+                        // Tail-prompt quit: the queue is already drained, so
+                        // this is a normal exit, not an early bail-out. Don't
+                        // flag $stats['quit'].
                         return $stats;
 
                     default:

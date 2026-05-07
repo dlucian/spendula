@@ -109,7 +109,7 @@ class ReviewSessionTest extends TestCase
         $this->assertSame(0, $stats['skipped']);
         $this->assertSame(0, $stats['transferred']);
         $this->assertSame(2, $stats['reviewed']);
-        $this->assertTrue($stats['quit'], 'tail-prompt q sets quit=true');
+        $this->assertFalse($stats['quit'], 'tail-prompt q is a normal exit (queue already drained), not an early quit');
     }
 
     public function test_undo_after_approve_clears_state_and_decrements_counters(): void
