@@ -62,7 +62,7 @@ class CounterpartyRulesTestCommandTest extends TestCase
 
         $this->artisan("spendula:counterparty:rules:test --dir={$this->tempDir}")
             ->expectsOutputToContain('FAIL')
-            ->expectsOutputToContain('bcp/broken')
+            ->expectsOutputToContain('bcp/rules/broken')
             ->assertFailed();
     }
 

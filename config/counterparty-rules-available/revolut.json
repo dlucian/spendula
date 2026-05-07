@@ -1,6 +1,20 @@
 {
   "name": "Revolut LT",
-  "description": "Cleanup rules for Revolut remittance shapes. Revolut puts most merchant detail into EB structured creditor/debtor fields, so L0/L1 carries the dominant load. The patterns here only target the L2 fall-through cases: card top-ups, certain card-payment merchant strings that embed a city or reference, and refund lines where the remittance is the only carrier.",
+  "description": "Cleanup rules for Revolut. `rules` operate on remittance_information[0] at L2; `name_rules` operate on the resolved creditor/debtor name at L0/L1 — Revolut emits the dirty merchant string directly into EB structured fields, so name-side cleanup is essential. Both lists share the same Rule schema (regex pattern + replacement + tests) and the same first-match-wins semantics; only the input string and the call site differ.",
+  "name_rules": [
+    {
+      "name": "bolt-eu-embedded-id",
+      "description": "Revolut writes Bolt ride bookings into creditor.name as 'Bolt.euo<digits>' or 'Bolt.eu/o/<digits>' — a per-ride embedded booking ID that fragments every trip into its own YNAB payee. Strip the suffix to a single canonical 'Bolt.eu' so all rides aggregate. Restrictive enough to leave already-clean 'Bolt.eu' strings alone (they pass through untouched, since no rule matches), and tight enough not to swallow unrelated 'Bolt.*' merchants.",
+      "pattern": "/^Bolt\\.eu(?:o|\\/o\\/)\\d+\\s*$/i",
+      "replacement": "Bolt.eu",
+      "tests": [
+        {"in": "Bolt.euo2604281114", "out": "Bolt.eu"},
+        {"in": "Bolt.euo2604260246", "out": "Bolt.eu"},
+        {"in": "Bolt.euo2604181659", "out": "Bolt.eu"},
+        {"in": "Bolt.eu/o/2604030805", "out": "Bolt.eu"}
+      ]
+    }
+  ],
   "rules": [
     {
       "name": "apple-pay-topup",

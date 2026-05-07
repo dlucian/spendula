@@ -8,6 +8,7 @@ use App\Services\Counterparty\Rules\PostHook;
 use App\Services\Counterparty\Rules\Rule;
 use App\Services\Counterparty\Rules\RuleEngine;
 use App\Services\Counterparty\Rules\RuleFixture;
+use App\Services\Counterparty\Rules\RuleOutcome;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
@@ -187,6 +188,7 @@ class CounterpartyRulesAddCommand extends Command
                 ->pluck('id');
 
             $existingRules = $this->existingRulesAsObjects($existing['rules']);
+            $existingNameRules = $this->existingNameRulesAsObjects($existing['name_rules'] ?? []);
             $rulesWithCandidate = [...$existingRules, $candidate];
 
             $impacted = 0;
@@ -194,11 +196,11 @@ class CounterpartyRulesAddCommand extends Command
             Transaction::query()
                 ->whereIn('bank_account_id', $bankAccountIds)
                 ->orderBy('id')
-                ->chunk(500, function ($chunk) use (&$impacted, &$samples, $existingRules, $rulesWithCandidate) {
+                ->chunk(500, function ($chunk) use (&$impacted, &$samples, $existingRules, $existingNameRules, $rulesWithCandidate) {
                     foreach ($chunk as $row) {
                         $payload = $row->raw_payload;
-                        $beforeName = $this->resolveWithRules($payload, $existingRules);
-                        $afterName = $this->resolveWithRules($payload, $rulesWithCandidate);
+                        $beforeName = $this->resolveWithRules($payload, $existingRules, $existingNameRules);
+                        $afterName = $this->resolveWithRules($payload, $rulesWithCandidate, $existingNameRules);
                         if ($beforeName !== $afterName) {
                             $impacted++;
                             if (count($samples) < 5) {
@@ -342,11 +344,25 @@ class CounterpartyRulesAddCommand extends Command
     }
 
     /**
+     * Reconstruct the bank's `name_rules` (if any) into Rule objects so
+     * the impact preview can apply L0/L1 name cleanup the same way the
+     * Resolver does. Same lenient parsing as existingRulesAsObjects():
+     * skip malformed entries; RuleLoader's strict validation runs on the
+     * next real load.
+     *
+     * @param  array<int, mixed>  $nameRulesData
+     * @return list<Rule>
+     */
+    private function existingNameRulesAsObjects(array $nameRulesData): array
+    {
+        return $this->existingRulesAsObjects($nameRulesData);
+    }
+
+    /**
      * Resolve a transaction's counterparty name using the supplied rule
-     * list at L2. Mirrors Resolver::resolve()'s ladder semantics so the
-     * impact preview reflects what the operator would see after a real
-     * recompute. Returns the same name Resolver would store in
-     * counterparty_name.
+     * lists. Mirrors Resolver::resolve()'s ladder semantics so the impact
+     * preview reflects what the operator would see after a real recompute.
+     * Returns the same name Resolver would store in counterparty_name.
      *
      * The duplication of L0/L1/L3/L4 logic from Resolver is pragmatic:
      * exposing a custom-rule-list code path on Resolver would couple it
@@ -355,8 +371,11 @@ class CounterpartyRulesAddCommand extends Command
      *
      * @param  array<string, mixed>  $transaction
      * @param  list<Rule>  $rules
+     * @param  list<Rule>  $nameRules  L0/L1 cleanup rules (the bank's
+     *                                 existing `name_rules` array). Pass
+     *                                 [] for banks without name-side rules.
      */
-    private function resolveWithRules(array $transaction, array $rules): string
+    private function resolveWithRules(array $transaction, array $rules, array $nameRules = []): string
     {
         $cdi = isset($transaction['credit_debit_indicator']) && is_string($transaction['credit_debit_indicator'])
             ? strtoupper($transaction['credit_debit_indicator'])
@@ -365,14 +384,30 @@ class CounterpartyRulesAddCommand extends Command
         $creditor = $this->extractName($transaction, 'creditor');
         $debtor = $this->extractName($transaction, 'debtor');
 
-        // L0: direction-correct party name.
+        $engine = app(RuleEngine::class);
+
+        // L0: direction-correct party name. With name_rules, the same
+        // tri-state outcome the Resolver uses applies here so the preview
+        // matches what sync/recompute will store.
         $direct = match ($cdi) {
             'CRDT' => $debtor,
             'DBIT' => $creditor,
             default => null,
         };
         if (is_string($direct) && $direct !== '') {
-            return mb_substr($direct, 0, 64);
+            $outcome = $nameRules !== []
+                ? $engine->resolveOutcome($direct, $nameRules)
+                : RuleOutcome::unmatched();
+            if ($outcome->result !== null) {
+                return mb_substr($outcome->result, 0, 64);
+            }
+            if (! $outcome->matched) {
+                // Resolver returns L0 names verbatim (no trim, no truncation)
+                // when no name_rule rewrote them; mirror that contract here so
+                // the impact preview matches what sync/recompute will store.
+                return $direct;
+            }
+            // matched && blanked: fall through to L1.
         }
 
         // L1: inverted party name.
@@ -382,11 +417,20 @@ class CounterpartyRulesAddCommand extends Command
             default => null,
         };
         if (is_string($inverted) && $inverted !== '') {
-            return mb_substr($inverted, 0, 64);
+            $outcome = $nameRules !== []
+                ? $engine->resolveOutcome($inverted, $nameRules)
+                : RuleOutcome::unmatched();
+            if ($outcome->result !== null) {
+                return mb_substr($outcome->result, 0, 64);
+            }
+            if (! $outcome->matched) {
+                // L1 unmatched: same verbatim contract as L0 above.
+                return $inverted;
+            }
+            // matched && blanked: fall through to L2.
         }
 
         // L2: rule engine against remittance_information[0].
-        $engine = app(RuleEngine::class);
         if (isset($transaction['remittance_information']) && is_array($transaction['remittance_information'])) {
             $first = $transaction['remittance_information'][0] ?? null;
             if (is_string($first) && trim($first) !== '') {

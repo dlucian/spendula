@@ -4,22 +4,30 @@ namespace App\Services\Counterparty;
 
 use App\Services\Counterparty\Rules\RuleEngine;
 use App\Services\Counterparty\Rules\RuleLoader;
+use App\Services\Counterparty\Rules\RuleOutcome;
 
 /**
  * SPEC §6.8 counterparty ladder.
  *
- * - L0: direction-correct debtor/creditor name (universal)
- * - L1: direction-inverted debtor/creditor name (Mock ASPSP, some RO banks)
- * - L2: remittance_information[0] processed by per-bank rule engine
+ * - L0: direction-correct debtor/creditor name (universal), passed
+ *       through the bank's `name_rules` if any matched
+ * - L1: direction-inverted debtor/creditor name (Mock ASPSP, some RO
+ *       banks), also passed through `name_rules`
+ * - L2: remittance_information[0] processed by per-bank `rules`
  * - L3: additional_information, falling back to bank_transaction_code.description
  * - L4: "(Unknown)"
  *
- * L0/L1/L3/L4 are universal and stay in code. L2 delegates to the
- * RuleEngine, which loads bank-specific rules from
+ * L0/L1/L3/L4 are universal and stay in code. L0/L1 cleanup and L2
+ * extraction both delegate to the RuleEngine but consume different
+ * per-bank lists: `name_rules` for L0/L1 (operating on the resolved
+ * creditor/debtor name) and `rules` for L2 (operating on
+ * remittance_information[0]). Both lists live in
  * config/counterparty-rules-enabled/<bank>.json (managed by the
  * spendula:counterparty:rules:* commands). Pass null bank slug for
- * transactions whose bank is unknown — no rules will apply, the
- * trimmed remittance is returned.
+ * transactions whose bank is unknown — no rules will apply, the raw
+ * L0/L1 name or trimmed remittance is returned. Name-rule rewrites
+ * keep the originating level (0 or 1); the rewrite is cleanup, not
+ * a level transition.
  */
 class Resolver
 {
@@ -73,6 +81,12 @@ class Resolver
         $creditor = $this->extractName($transaction, 'creditor');
         $debtor = $this->extractName($transaction, 'debtor');
 
+        // Name-rule list is loaded once per resolve() call: L0 and L1
+        // share it, and at most one of them produces a return. With null
+        // bank slug we skip rule consultation entirely so callers with
+        // unknown bank get current pre-name-rule behaviour.
+        $nameRules = $bankSlug !== null ? $this->ruleLoader->nameRulesForBank($bankSlug) : [];
+
         // Level 0: direction-correct.
         $directCorrect = match ($cdi) {
             'CRDT' => $debtor,
@@ -80,7 +94,24 @@ class Resolver
             default => null,
         };
         if (is_string($directCorrect) && $directCorrect !== '') {
-            return new ResolvedCounterparty($directCorrect, 0);
+            $outcome = $nameRules !== []
+                ? $this->ruleEngine->resolveOutcome($directCorrect, $nameRules)
+                : RuleOutcome::unmatched();
+
+            if ($outcome->result !== null) {
+                // Rule fired with a non-empty rewrite: truncate to 64
+                // (matching the L2/L3 contract for cleaned outputs).
+                return new ResolvedCounterparty(mb_substr($outcome->result, 0, 64), 0);
+            }
+            if (! $outcome->matched) {
+                // No rule fired: preserve the raw L0 name verbatim — no
+                // implicit trim, no truncation. (Whitespace and >64 char
+                // names round-trip unchanged for clean callers.)
+                return new ResolvedCounterparty($directCorrect, 0);
+            }
+            // matched && result === null: a rule intentionally blanked
+            // the L0 candidate. Fall through to L1 so the operator's
+            // suppressive rule redirects resolution down the ladder.
         }
 
         // Level 1: direction-inverted (Mock ASPSP + some RO banks).
@@ -90,7 +121,17 @@ class Resolver
             default => null,
         };
         if (is_string($inverted) && $inverted !== '') {
-            return new ResolvedCounterparty($inverted, 1);
+            $outcome = $nameRules !== []
+                ? $this->ruleEngine->resolveOutcome($inverted, $nameRules)
+                : RuleOutcome::unmatched();
+
+            if ($outcome->result !== null) {
+                return new ResolvedCounterparty(mb_substr($outcome->result, 0, 64), 1);
+            }
+            if (! $outcome->matched) {
+                return new ResolvedCounterparty($inverted, 1);
+            }
+            // matched && blanked: fall through to L2.
         }
 
         // Level 2: rule engine over remittance_information[0].

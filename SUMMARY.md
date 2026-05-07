@@ -1,5 +1,44 @@
 # Latest task summary
 
+## Counterparty cleanup at L0/L1 via `name_rules` (GH #33)
+
+### What changed
+
+- `app/Services/Counterparty/Rules/RuleLoader.php` — new `nameRulesForBank(string $bankSlug): list<Rule>` parallel to `forBank()`, with its own per-slug cache. The private `loadFile()` is now parameterised by the top-level array key (`'rules'` | `'name_rules'`); a missing `name_rules` key is *not* an error (returns `[]`), while a missing `rules` key remains a validation failure. `clearCache()` resets both caches.
+- `app/Services/Counterparty/Resolver.php` — at L0 and L1, the resolved candidate name is passed through the bank's `name_rules` before being returned. Empty post-rule result falls through to the next ladder step (same fall-through guarantee `RuleEngine::apply` already gives at L2). When `bankSlug` is `null`, no rules are consulted — current behaviour preserved. The level on the rewrite is the originating level (still 0 or 1) — cleanup, not transition. Names returned at L0/L1 are now also truncated to 64 chars via `mb_substr`, matching the L2/L3 contract (the truncation was implicit before because EB structured names rarely exceed 64; the explicit `mb_substr` makes the contract uniform).
+- `config/counterparty-rules-available/revolut.json` — new `name_rules` block with one rule, `bolt-eu-embedded-id`, collapsing all four Bolt variants from the issue (`Bolt.euo<digits>`, `Bolt.eu/o/<digits>`) under the single canonical payee `Bolt.eu`. Top-level file `description` updated to explain the two-list convention.
+- `tests/Unit/Services/Counterparty/ResolverTest.php` — five new test cases: L0 with name rule that matches; L0 with name rule that doesn't match (clean string passes through); L0 with `bankSlug=null` (no rules consulted); L1 inverted with name rule that matches; slashed Bolt variant.
+- `tests/Unit/Services/Counterparty/Rules/RuleLoaderTest.php` — six new test cases covering the `name_rules` schema: returns `[]` when only `rules` present; returns `[]` when no file; loads alongside `rules`; invalid regex throws; missing required field throws; empty `tests` throws; cache stability per bank.
+- `docs/SPEC.md` §6.8 — Level 0 and Level 1 entries now mention the `name_rules` cleanup pipeline and that the level is unaffected.
+- `DECISIONS.md` (new) — records the option-2 (separate `name_rules` array) decision, the rejected alternatives (unified list, hard-coded patterns, `target` discriminator), the constraints, and the consequences (notably: deferred ATM case).
+
+### Assumptions made
+
+- The `RuleEngine::apply()` semantics unchanged: same engine processes `name_rules` and `rules`, since the two lists share the `Rule` schema. No `RuleEngine` changes were made.
+- `RuleFixtureSelfTest` continues to validate only `rules`, not `name_rules`. The new Bolt fixtures are validated indirectly via the `ResolverTest` cases that resolve against the available/ directory directly. (A follow-up could extend `RuleFixtureSelfTest` to also walk `name_rules` per file; deferred — fixtures are validated by `RuleLoader` schema validation on load already.)
+- `counterparty_resolution_level` continues to mean "ladder level the data came from", not "ladder level after cleanup". The recompute output (`name_changed=4 level_changed=0` for the Revolut Bolt collapse) is the intended shape.
+- Postgres session timezone was UTC during the live demo (per `config/database.php`). Dev DB is `spendula_dev` per CLAUDE.md.
+- The recompute command does not touch `dedup_hash` (per its docblock) — name-rule rewrites change `counterparty_name` but not the underlying dedup invariant. Existing `(bank_account_id, dedup_hash, occurrence)` rows remain stable.
+- Mock ASPSP behaviour was not exercised in this change. The L1 path is exercised against Revolut `creditor.name` data with synthetic `CRDT` direction in unit tests.
+
+### Blast radius
+
+- **Resolver call sites** (2): `MatchUpdateOrInsert::insert()` (sync) and `CounterpartyRecomputeCommand::handle()` (manual). Both pass a non-null bank slug, so both now consult `name_rules`. Banks without a `name_rules` array (BCP, ING-RO business/personal) get `[]` from the loader and the L0/L1 result is `trim()`-passed through — verified empirically with `name_changed=0 level_changed=0` on all three.
+- **CounterpartyRulesAddCommand** intentionally duplicates resolver L0/L1/L3/L4 logic for its preview output. It does *not* yet apply `name_rules` to its L0/L1 preview. Out of scope; the operator workflow is to hand-edit `name_rules` for now (issue plan called this out as a follow-up).
+- **`dedup_hash`** is unaffected: `Resolver::normalize()` still operates on the *raw* pre-resolution counterparty (creditor/debtor name pulled by `MatchUpdateOrInsert::extractRawCounterparty`), not on the post-cleanup `counterparty_name`. The dedup invariant from SPEC §6.3 is preserved.
+- **YNAB push memo / payee_name** reads `counterparty_name`, so on the next push, Revolut Bolt rides will land in YNAB under a single payee `Bolt.eu`. This is the point of the change.
+- **Existing tests** all green (309 PHPUnit, PHPStan level 8 clean, Pint clean).
+
+### Open threads
+
+- **ATM withdrawal collapse — deferred to a follow-up issue.** The issue lists three Revolut ATM rows that should collapse away from the holder's name. Cannot be expressed in `name_rules` as designed: a name-only rule keyed on `JANE DOE` would fire on legit self-transfers between the operator's own accounts. Solving it cleanly needs a rule predicate that inspects both name and remittance (e.g. *if remittance =~ /^Cash at/i, rewrite name to "ATM withdrawal"*), which is a schema extension worth its own DECISIONS entry.
+- **`spendula:counterparty:rules:add` does not author `name_rules`.** Existing `--target=name|remittance` flag does not exist. Hand-edit JSON for now. If `name_rules` proliferates beyond Revolut, add the flag.
+- ~~`RuleFixtureSelfTest` does not walk `name_rules` fixtures.~~ Wired in round 2 (codex review): `RuleLoader::availableNameRules()` added; `RuleFixtureSelfTest` and `spendula:counterparty:rules:test` both iterate `name_rules` alongside `rules`. Output keys are now `[bank/rules/<name>]` and `[bank/name_rules/<name>]`. The `--bank=revolut` CLI now reports 17 fixtures (13 + 4) instead of 13.
+- **Loader cache layering** is two parallel per-slug caches. Acceptable for v1; collapse into a single `forBankBundle()` if profiling ever shows it.
+- **`mb_substr` truncation at L0/L1** applies *only* when a `name_rules` rewrite fires. Banks with no `name_rules` (and the null-bank-slug path) return the raw L0/L1 name verbatim — no trim, no truncation — preserving pre-PR behaviour exactly. Round-2 codex review caught a regression where the empty-rules path was unconditionally trimming; fixed by short-circuiting before the engine call.
+
+---
+
 ## ING Romania L2 — collapse digit-bearing names: Spotify, Twilio, BUGETUL DE STAT, Lazada, 2C2P (GH #36)
 
 ### What changed

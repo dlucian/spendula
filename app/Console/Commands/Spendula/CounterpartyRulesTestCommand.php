@@ -35,29 +35,47 @@ class CounterpartyRulesTestCommand extends Command
         $loader = new RuleLoader($dir);
 
         $bank = (string) $this->option('bank');
-        $rulesByBank = $bank !== ''
-            ? [$bank => $loader->forBank($bank)]
-            : $loader->available();
+        if ($bank !== '') {
+            $bundles = [
+                'rules' => [$bank => $loader->forBank($bank)],
+                'name_rules' => [$bank => $loader->nameRulesForBank($bank)],
+            ];
+        } else {
+            $bundles = [
+                'rules' => $loader->available(),
+                'name_rules' => $loader->availableNameRules(),
+            ];
+        }
 
         $passed = 0;
         $failed = 0;
-        foreach ($rulesByBank as $slug => $rules) {
-            foreach ($rules as $rule) {
-                foreach ($rule->fixtures as $fixture) {
-                    $actual = $engine->apply($fixture->input, $rules);
-                    if ($actual === $fixture->expected) {
-                        $passed++;
-                    } else {
-                        $failed++;
-                        $this->error('FAIL');
-                        $this->error(sprintf(
-                            '[%s/%s]: %s -> %s (expected %s)',
-                            $slug,
-                            $rule->name,
-                            var_export($fixture->input, true),
-                            var_export($actual, true),
-                            var_export($fixture->expected, true),
-                        ));
+        foreach ($bundles as $kind => $rulesByBank) {
+            foreach ($rulesByBank as $slug => $rules) {
+                foreach ($rules as $rule) {
+                    foreach ($rule->fixtures as $fixture) {
+                        // Each bucket has its own resolver-level
+                        // contract: `rules` are applied at L2 (engine
+                        // apply() collapses no-match to trim($input)),
+                        // `name_rules` at L0/L1 (raw on no-match,
+                        // empty on suppressive blank, rewrite on hit).
+                        $actual = $kind === 'name_rules'
+                            ? $engine->applyForName($fixture->input, $rules)
+                            : $engine->apply($fixture->input, $rules);
+                        if ($actual === $fixture->expected) {
+                            $passed++;
+                        } else {
+                            $failed++;
+                            $this->error('FAIL');
+                            $this->error(sprintf(
+                                '[%s/%s/%s]: %s -> %s (expected %s)',
+                                $slug,
+                                $kind,
+                                $rule->name,
+                                var_export($fixture->input, true),
+                                var_export($actual, true),
+                                var_export($fixture->expected, true),
+                            ));
+                        }
                     }
                 }
             }

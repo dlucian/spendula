@@ -576,9 +576,13 @@ For each transaction, try in order and record which level succeeded in `counterp
 - **Level 0** — direction-correct field:
   - `CRDT` (money in) → `debtor.name` (the other party is the debtor)
   - `DBIT` (money out) → `creditor.name` (the other party is the creditor)
+
+  The resolved name is then passed through the bank's optional `name_rules` cleanup pipeline (same Rule schema and first-match-wins semantics as the L2 `rules` list, only the input string and the call site differ). Used for banks like Revolut that emit dirty merchant strings into structured creditor/debtor fields. The rewrite is cleanup at the same level — `counterparty_resolution_level` stays 0.
 - **Level 1** — direction-inverted (covers banks that report incorrectly, notably Mock ASPSP and some RO banks):
   - `CRDT` → `creditor.name`
   - `DBIT` → `debtor.name`
+
+  Same `name_rules` cleanup as L0 applies; level stays 1.
 - **Level 2** — extract a counterparty from `remittance_information[0]`, truncated to 64 chars. Two strategies are tried in order:
   - **Structured CSV pattern** (ING RO Business and similar) — when the line looks like `Card number, **** XXXX, Transaction at, <MERCHANT>, Authorization date, …`, the merchant between `Transaction at, ` and `, Authorization date,` is pulled out directly.
   - **Prefix + suffix stripping** — strips known banking prefixes (`PURCHASE `, `POS `, `CARD PAYMENT `, `SEPA DD `, `SEPA CT `, BCP's `COMPRA NNNN ` / `TRF DE / MB WAY P / P / P O ` / `DD ` / `PAGSERV `) and the trailing ` CONTACTLESS` suffix some banks append to card-purchase lines.

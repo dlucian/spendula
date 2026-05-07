@@ -3,6 +3,7 @@
 namespace Tests\Unit\Services\Counterparty;
 
 use App\Services\Counterparty\Resolver;
+use App\Services\Counterparty\Rules\Rule;
 use App\Services\Counterparty\Rules\RuleEngine;
 use App\Services\Counterparty\Rules\RuleLoader;
 use PHPUnit\Framework\TestCase;
@@ -489,5 +490,204 @@ class ResolverTest extends TestCase
         $this->assertSame('', Resolver::normalize(''));
         $this->assertSame('', Resolver::normalize(null));
         $this->assertSame('acme 123', Resolver::normalize('  ACME / 123  '));
+    }
+
+    public function test_level_0_applies_name_rules_to_rewrite_creditor_name(): void
+    {
+        // Revolut puts the dirty merchant string directly into creditor.name
+        // for card payments. The bolt-eu-embedded-id name rule strips the
+        // trailing booking ID so all four shapes collapse to "Bolt.eu".
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'Bolt.euo2604281114'],
+        ], 'revolut');
+
+        $this->assertSame('Bolt.eu', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_level_0_name_rule_handles_slashed_bolt_variant(): void
+    {
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'Bolt.eu/o/2604030805'],
+        ], 'revolut');
+
+        $this->assertSame('Bolt.eu', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_level_0_returns_unchanged_name_when_no_name_rule_matches(): void
+    {
+        // A clean Revolut merchant string that no name rule should touch.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'Lufthansa AG'],
+        ], 'revolut');
+
+        $this->assertSame('Lufthansa AG', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_level_0_skips_name_rules_when_bank_slug_is_null(): void
+    {
+        // Same dirty string, no bank slug — current pre-name-rule behavior
+        // must be preserved (no rules consulted, raw name returned).
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'Bolt.euo2604281114'],
+        ]);
+
+        $this->assertSame('Bolt.euo2604281114', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_level_0_preserves_whitespace_for_null_bank_slug(): void
+    {
+        // Pre-name-rule contract: with no bank slug, the raw L0 name is
+        // returned verbatim — including surrounding whitespace. Trimming
+        // would be a behaviour change unrelated to name_rules.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => '  ACME  '],
+        ]);
+
+        $this->assertSame('  ACME  ', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_level_0_preserves_whitespace_when_no_name_rule_matches(): void
+    {
+        // Same contract for the case where the bank *has* name_rules but
+        // none of them match: applyOrNull returns null, the raw name is
+        // returned verbatim — no implicit trim, no truncation.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => '  Lufthansa AG  '],
+        ], 'revolut');
+
+        $this->assertSame('  Lufthansa AG  ', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_level_0_does_not_truncate_long_clean_name_when_no_rule_matches(): void
+    {
+        // L0/L1 truncation to 64 only applies when a name_rule actually
+        // rewrote the input. A 100-char clean name from a bank with
+        // name_rules should be returned untruncated.
+        $longName = str_repeat('A', 100);
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => $longName],
+        ], 'revolut');
+
+        $this->assertSame($longName, $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_level_0_blanked_by_name_rule_falls_through_to_l1(): void
+    {
+        // Suppressive name_rule: if a rule matches and produces an empty
+        // result after post-hooks, the L0 candidate is treated as
+        // intentionally blanked — resolution falls through to L1, which
+        // then yields its own value (or further down the ladder).
+        $resolver = $this->resolverWithInlineNameRules('synthetic', [
+            new Rule(
+                name: 'suppress-direct-correct',
+                description: 'Suppress L0 to force L1.',
+                pattern: '/^SELF DIRECT$/',
+                replacement: '',
+                postHooks: [],
+                fixtures: [],
+            ),
+        ]);
+
+        $resolved = $resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'SELF DIRECT'],
+            'debtor' => ['name' => 'L1 FALLBACK'],
+        ], 'synthetic');
+
+        $this->assertSame('L1 FALLBACK', $resolved->name);
+        $this->assertSame(1, $resolved->level);
+    }
+
+    public function test_level_1_blanked_by_name_rule_falls_through_to_l2(): void
+    {
+        // Same suppression contract at L1: a rule that intentionally
+        // blanks the inverted candidate should redirect to L2.
+        $resolver = $this->resolverWithInlineNameRules('synthetic', [
+            new Rule(
+                name: 'suppress-inverted',
+                description: 'Suppress L1 to force L2.',
+                pattern: '/^SELF INVERTED$/',
+                replacement: '',
+                postHooks: [],
+                fixtures: [],
+            ),
+        ]);
+
+        $resolved = $resolver->resolve([
+            'credit_debit_indicator' => 'CRDT',
+            'debtor' => null,
+            'creditor' => ['name' => 'SELF INVERTED'],
+            'remittance_information' => ['ACME GMBH'],
+        ], 'synthetic');
+
+        $this->assertSame('ACME GMBH', $resolved->name);
+        $this->assertSame(2, $resolved->level);
+    }
+
+    /**
+     * Spin up a Resolver backed by a temp rule directory containing a
+     * single bank file with the given name_rules. The loader is exercised
+     * end-to-end (parse, validation, cache); only the per-test JSON shape
+     * differs.
+     *
+     * @param  Rule[]  $nameRules
+     */
+    private function resolverWithInlineNameRules(string $bankSlug, array $nameRules): Resolver
+    {
+        $tempDir = sys_get_temp_dir().'/spendula-resolver-test-'.uniqid();
+        mkdir($tempDir, 0755, true);
+        register_shutdown_function(function () use ($tempDir) {
+            foreach (glob("{$tempDir}/*") ?: [] as $f) {
+                @unlink($f);
+            }
+            @rmdir($tempDir);
+        });
+
+        $serializedNameRules = array_map(static fn (Rule $r): array => [
+            'name' => $r->name,
+            'description' => $r->description,
+            'pattern' => $r->pattern,
+            'replacement' => $r->replacement,
+            'post' => $r->postHooks,
+            // RuleLoader requires a non-empty 'tests' array but doesn't
+            // run them against the engine — that's the self-test's job.
+            // A trivial passing fixture is enough to satisfy the schema.
+            'tests' => [['in' => 'noop', 'out' => 'noop']],
+        ], $nameRules);
+
+        file_put_contents(
+            "{$tempDir}/{$bankSlug}.json",
+            json_encode(['name' => $bankSlug, 'rules' => [], 'name_rules' => $serializedNameRules]),
+        );
+
+        return new Resolver(new RuleLoader($tempDir), new RuleEngine);
+    }
+
+    public function test_level_1_applies_name_rules_when_inverted(): void
+    {
+        // Mock-ASPSP-style inversion: counterparty appears in creditor.name
+        // for an incoming CRDT. Name rules must still rewrite, level stays 1.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'CRDT',
+            'debtor' => null,
+            'creditor' => ['name' => 'Bolt.euo2604281114'],
+        ], 'revolut');
+
+        $this->assertSame('Bolt.eu', $resolved->name);
+        $this->assertSame(1, $resolved->level);
     }
 }

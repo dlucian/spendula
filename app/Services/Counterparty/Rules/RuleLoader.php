@@ -28,10 +28,17 @@ namespace App\Services\Counterparty\Rules;
  */
 final class RuleLoader
 {
-    /** @var array<string, list<Rule>> */
+    /**
+     * Per-bank parse results. Each entry holds both rule lists from a
+     * single parse of the file, so loading one list always validates the
+     * other — a malformed bank file fails on first access regardless of
+     * which list the caller asked for.
+     *
+     * @var array<string, array{rules: list<Rule>, name_rules: list<Rule>}>
+     */
     private array $cache = [];
 
-    /** @var array<string, list<Rule>>|null */
+    /** @var array<string, array{rules: list<Rule>, name_rules: list<Rule>}>|null */
     private ?array $availableCache = null;
 
     public function __construct(
@@ -63,6 +70,54 @@ final class RuleLoader
      */
     public function forBank(string $bankSlug): array
     {
+        return $this->bundleForBank($bankSlug)['rules'];
+    }
+
+    /**
+     * Return name-cleanup rules for the given bank slug.
+     *
+     * Success: returns the Rule[] parsed from the optional `name_rules` array
+     *   in {rulesDir}/{bankSlug}.json. Returns [] if the file has no
+     *   `name_rules` key, or if no file exists for the slug. The Rule objects
+     *   are the same shape as those returned by forBank() — only the call
+     *   site differs (see Resolver: name_rules apply to L0/L1 candidate names
+     *   before return; the regular `rules` apply to remittance at L2).
+     *
+     * Failure: throws RuleValidationException for the same reasons as
+     *   forBank() — malformed JSON, bad regex, unknown post hook, empty
+     *   tests array, dangling symlink. Validation precision matches the
+     *   existing loader for `rules`.
+     *
+     * Side effects: reads {rulesDir}/{bankSlug}.json on first call per slug.
+     *   Both `rules` and `name_rules` come from a single shared per-slug
+     *   bundle cache (see bundleForBank()), so a file is parsed and
+     *   validated exactly once regardless of which accessor fires first.
+     *
+     * Idempotency: safe to call repeatedly; cached per slug.
+     *
+     * @return list<Rule>
+     *
+     * @throws RuleValidationException
+     */
+    public function nameRulesForBank(string $bankSlug): array
+    {
+        return $this->bundleForBank($bankSlug)['name_rules'];
+    }
+
+    /**
+     * Single-source-of-truth per-bank parse: handles file existence,
+     * dangling-symlink detection, and caching, then delegates to
+     * loadFile() which validates and parses both `rules` and `name_rules`
+     * in one pass. Both lists for a given bank are populated from the
+     * same parse, so a file that's invalid for one accessor is also
+     * invalid for the other.
+     *
+     * @return array{rules: list<Rule>, name_rules: list<Rule>}
+     *
+     * @throws RuleValidationException
+     */
+    private function bundleForBank(string $bankSlug): array
+    {
         if (array_key_exists($bankSlug, $this->cache)) {
             return $this->cache[$bankSlug];
         }
@@ -81,7 +136,7 @@ final class RuleLoader
         }
 
         if (! is_file($path)) {
-            return $this->cache[$bankSlug] = [];
+            return $this->cache[$bankSlug] = ['rules' => [], 'name_rules' => []];
         }
 
         return $this->cache[$bankSlug] = $this->loadFile($path);
@@ -107,6 +162,49 @@ final class RuleLoader
      * @throws RuleValidationException
      */
     public function available(): array
+    {
+        $bundles = $this->availableBundles();
+        $result = [];
+        foreach ($bundles as $slug => $bundle) {
+            $result[$slug] = $bundle['rules'];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Return all rule files' `name_rules` arrays, keyed by bank slug.
+     *
+     * Mirrors available() but exposes the `name_rules` slice of the same
+     * underlying parse — both lists come from one validation pass per
+     * file, so a malformed bank file fails uniformly regardless of which
+     * accessor surfaces it first.
+     *
+     * @return array<string, list<Rule>>
+     *
+     * @throws RuleValidationException
+     */
+    public function availableNameRules(): array
+    {
+        $bundles = $this->availableBundles();
+        $result = [];
+        foreach ($bundles as $slug => $bundle) {
+            $result[$slug] = $bundle['name_rules'];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Internal: walk every *.json in the rules directory exactly once
+     * and parse both rule lists per file. Cached, so repeated calls
+     * cost nothing.
+     *
+     * @return array<string, array{rules: list<Rule>, name_rules: list<Rule>}>
+     *
+     * @throws RuleValidationException
+     */
+    private function availableBundles(): array
     {
         if ($this->availableCache !== null) {
             return $this->availableCache;
@@ -150,7 +248,14 @@ final class RuleLoader
     }
 
     /**
-     * @return list<Rule>
+     * Parse the file's top-level `rules` (required) and `name_rules`
+     * (optional) arrays in one pass. Both are fully validated on every
+     * call — regex compilability, post-hook names, fixture presence —
+     * so a broken regex in either list surfaces on the first accessor
+     * to load this bank, not whichever ladder level happens to fire
+     * first in production.
+     *
+     * @return array{rules: list<Rule>, name_rules: list<Rule>}
      *
      * @throws RuleValidationException
      */
@@ -179,7 +284,19 @@ final class RuleLoader
             $rules[] = $this->parseRule($ruleData, $path, $i);
         }
 
-        return $rules;
+        $nameRules = [];
+        if (array_key_exists('name_rules', $data)) {
+            if (! is_array($data['name_rules'])) {
+                throw new RuleValidationException(
+                    "Top-level 'name_rules' is not an array in {$path}",
+                );
+            }
+            foreach ($data['name_rules'] as $i => $ruleData) {
+                $nameRules[] = $this->parseRule($ruleData, $path, $i);
+            }
+        }
+
+        return ['rules' => $rules, 'name_rules' => $nameRules];
     }
 
     /**

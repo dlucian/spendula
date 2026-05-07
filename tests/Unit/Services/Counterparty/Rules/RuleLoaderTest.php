@@ -272,4 +272,190 @@ class RuleLoaderTest extends TestCase
 
         $loader->available();
     }
+
+    public function test_name_rules_for_bank_returns_empty_when_only_rules_present(): void
+    {
+        $this->writeRuleFile('bcp.json', [
+            'name' => 'BCP',
+            'rules' => [
+                ['name' => 'r1', 'description' => 'd', 'pattern' => '/^X$/', 'replacement' => '', 'tests' => [['in' => 'X', 'out' => '']]],
+            ],
+        ]);
+
+        $loader = new RuleLoader($this->tempDir);
+
+        $this->assertSame([], $loader->nameRulesForBank('bcp'));
+        // forBank should still load the regular rules.
+        $this->assertCount(1, $loader->forBank('bcp'));
+    }
+
+    public function test_name_rules_for_bank_returns_empty_when_no_file(): void
+    {
+        $loader = new RuleLoader($this->tempDir);
+
+        $this->assertSame([], $loader->nameRulesForBank('revolut'));
+    }
+
+    public function test_name_rules_for_bank_loads_when_present_alongside_rules(): void
+    {
+        $this->writeRuleFile('revolut.json', [
+            'name' => 'Revolut',
+            'rules' => [
+                ['name' => 'r1', 'description' => 'd', 'pattern' => '/^X$/', 'replacement' => '', 'tests' => [['in' => 'X', 'out' => '']]],
+            ],
+            'name_rules' => [
+                [
+                    'name' => 'bolt',
+                    'description' => 'Bolt embedded ID',
+                    'pattern' => '/^Bolt\\.eu.*$/i',
+                    'replacement' => 'Bolt.eu',
+                    'tests' => [['in' => 'Bolt.euo2604281114', 'out' => 'Bolt.eu']],
+                ],
+            ],
+        ]);
+
+        $loader = new RuleLoader($this->tempDir);
+        $remittance = $loader->forBank('revolut');
+        $names = $loader->nameRulesForBank('revolut');
+
+        $this->assertCount(1, $remittance);
+        $this->assertSame('r1', $remittance[0]->name);
+        $this->assertCount(1, $names);
+        $this->assertInstanceOf(Rule::class, $names[0]);
+        $this->assertSame('bolt', $names[0]->name);
+        $this->assertSame('Bolt.eu', $names[0]->replacement);
+    }
+
+    public function test_name_rules_with_invalid_regex_throws(): void
+    {
+        $this->writeRuleFile('revolut.json', [
+            'name' => 'Revolut',
+            'rules' => [],
+            'name_rules' => [
+                [
+                    'name' => 'broken-name-rule',
+                    'description' => 'd',
+                    'pattern' => '/[broken/',
+                    'replacement' => '',
+                    'tests' => [['in' => 'X', 'out' => 'X']],
+                ],
+            ],
+        ]);
+
+        $loader = new RuleLoader($this->tempDir);
+
+        $this->expectException(RuleValidationException::class);
+        $this->expectExceptionMessageMatches('/regex|pattern/i');
+
+        $loader->nameRulesForBank('revolut');
+    }
+
+    public function test_name_rules_with_missing_required_field_throws(): void
+    {
+        $this->writeRuleFile('revolut.json', [
+            'name' => 'Revolut',
+            'rules' => [],
+            'name_rules' => [
+                ['name' => 'missing-tests', 'description' => 'd', 'pattern' => '/^X$/', 'replacement' => ''],
+            ],
+        ]);
+
+        $loader = new RuleLoader($this->tempDir);
+
+        $this->expectException(RuleValidationException::class);
+
+        $loader->nameRulesForBank('revolut');
+    }
+
+    public function test_name_rules_with_failing_fixture_is_caught_by_self_test(): void
+    {
+        // The loader doesn't run fixtures (RuleFixtureSelfTest does).
+        // Validate that the loader at least surfaces empty-tests as it
+        // does for `rules`, so the contract is symmetric.
+        $this->writeRuleFile('revolut.json', [
+            'name' => 'Revolut',
+            'rules' => [],
+            'name_rules' => [
+                [
+                    'name' => 'no-tests',
+                    'description' => 'd',
+                    'pattern' => '/^X$/',
+                    'replacement' => '',
+                    'tests' => [],
+                ],
+            ],
+        ]);
+
+        $loader = new RuleLoader($this->tempDir);
+
+        $this->expectException(RuleValidationException::class);
+        $this->expectExceptionMessageMatches('/tests.*empty|empty.*tests/i');
+
+        $loader->nameRulesForBank('revolut');
+    }
+
+    public function test_name_rules_for_bank_validates_required_top_level_rules_key(): void
+    {
+        // A file with only `name_rules` and no `rules` key is invalid.
+        // nameRulesForBank() must surface that — otherwise the failure
+        // would only manifest later when L2 resolution calls forBank()
+        // for the same bank, making config breakage hard to detect.
+        $this->writeRuleFile('revolut.json', [
+            'name' => 'Revolut',
+            'name_rules' => [
+                ['name' => 'r1', 'description' => 'd', 'pattern' => '/^X$/', 'replacement' => '', 'tests' => [['in' => 'X', 'out' => '']]],
+            ],
+        ]);
+
+        $loader = new RuleLoader($this->tempDir);
+
+        $this->expectException(RuleValidationException::class);
+        $this->expectExceptionMessageMatches('/rules.*missing|missing.*rules/i');
+
+        $loader->nameRulesForBank('revolut');
+    }
+
+    public function test_name_rules_for_bank_validates_regular_rules_regex(): void
+    {
+        // A bank file with valid name_rules but a broken regex in `rules`
+        // must fail when nameRulesForBank() is called — the loader parses
+        // both arrays in one pass so a malformed `rules` cannot lurk
+        // until L2 fires.
+        $this->writeRuleFile('revolut.json', [
+            'name' => 'Revolut',
+            'rules' => [
+                ['name' => 'broken-l2', 'description' => 'd', 'pattern' => '/[broken/', 'replacement' => '', 'tests' => [['in' => 'X', 'out' => 'X']]],
+            ],
+            'name_rules' => [
+                ['name' => 'ok-name', 'description' => 'd', 'pattern' => '/^A$/', 'replacement' => 'B', 'tests' => [['in' => 'A', 'out' => 'B']]],
+            ],
+        ]);
+
+        $loader = new RuleLoader($this->tempDir);
+
+        $this->expectException(RuleValidationException::class);
+        $this->expectExceptionMessageMatches('/regex|pattern/i');
+
+        $loader->nameRulesForBank('revolut');
+    }
+
+    public function test_name_rules_for_bank_caches_per_bank(): void
+    {
+        $this->writeRuleFile('revolut.json', [
+            'name' => 'Revolut',
+            'rules' => [],
+            'name_rules' => [
+                ['name' => 'r1', 'description' => 'd', 'pattern' => '/^X$/', 'replacement' => '', 'tests' => [['in' => 'X', 'out' => '']]],
+            ],
+        ]);
+
+        $loader = new RuleLoader($this->tempDir);
+        $first = $loader->nameRulesForBank('revolut');
+
+        $this->writeRuleFile('revolut.json', ['name' => 'Revolut', 'rules' => [], 'name_rules' => []]);
+        $second = $loader->nameRulesForBank('revolut');
+
+        $this->assertCount(1, $first);
+        $this->assertCount(1, $second);
+    }
 }
