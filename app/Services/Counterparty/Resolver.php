@@ -11,7 +11,7 @@ use App\Services\Counterparty\Rules\RuleLoader;
  * - L0: direction-correct debtor/creditor name (universal)
  * - L1: direction-inverted debtor/creditor name (Mock ASPSP, some RO banks)
  * - L2: remittance_information[0] processed by per-bank rule engine
- * - L3: additional_information fallback
+ * - L3: additional_information, falling back to bank_transaction_code.description
  * - L4: "(Unknown)"
  *
  * L0/L1/L3/L4 are universal and stay in code. L2 delegates to the
@@ -36,7 +36,8 @@ class Resolver
      *   debtor/creditor name; L1 = direction-inverted (Mock ASPSP, some RO
      *   banks); L2 = first terminal match from the bank's rule engine over
      *   remittance_information[0] (or the trimmed remittance if no rule
-     *   matches); L3 = additional_information; L4 = "(Unknown)".
+     *   matches); L3 = additional_information when non-empty, else
+     *   bank_transaction_code.description when non-empty; L4 = "(Unknown)".
      *
      * Failure: throws RuleValidationException (from RuleLoader::forBank())
      *   when bankSlug is non-null and the enabled rule file for that bank
@@ -58,7 +59,8 @@ class Resolver
      * @param  array<string, mixed>  $transaction  EB transaction array
      *                                             (typically from $payload->raw_payload). Read keys:
      *                                             credit_debit_indicator, creditor.name, debtor.name,
-     *                                             remittance_information[0], additional_information.
+     *                                             remittance_information[0], additional_information,
+     *                                             bank_transaction_code.description.
      * @param  ?string  $bankSlug  Bank slug to scope rules to. null means
      *                             no rules apply (L2 returns the trimmed remittance verbatim).
      */
@@ -103,11 +105,21 @@ class Resolver
             }
         }
 
-        // Level 3: additional_information.
+        // Level 3: additional_information, falling back to bank_transaction_code.description.
         if (isset($transaction['additional_information']) && is_string($transaction['additional_information'])) {
             $trimmed = trim($transaction['additional_information']);
             if ($trimmed !== '') {
                 return new ResolvedCounterparty(mb_substr($trimmed, 0, 64), 3);
+            }
+        }
+
+        if (isset($transaction['bank_transaction_code']) && is_array($transaction['bank_transaction_code'])) {
+            $description = $transaction['bank_transaction_code']['description'] ?? null;
+            if (is_string($description)) {
+                $trimmed = trim($description);
+                if ($trimmed !== '') {
+                    return new ResolvedCounterparty(mb_substr($trimmed, 0, 64), 3);
+                }
             }
         }
 

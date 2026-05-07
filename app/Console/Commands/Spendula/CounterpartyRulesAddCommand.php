@@ -397,11 +397,21 @@ class CounterpartyRulesAddCommand extends Command
             }
         }
 
-        // L3: additional_information fallback.
+        // L3: additional_information, falling back to bank_transaction_code.description.
         if (isset($transaction['additional_information']) && is_string($transaction['additional_information'])) {
             $trimmed = trim($transaction['additional_information']);
             if ($trimmed !== '') {
                 return mb_substr($trimmed, 0, 64);
+            }
+        }
+
+        if (isset($transaction['bank_transaction_code']) && is_array($transaction['bank_transaction_code'])) {
+            $description = $transaction['bank_transaction_code']['description'] ?? null;
+            if (is_string($description)) {
+                $trimmed = trim($description);
+                if ($trimmed !== '') {
+                    return mb_substr($trimmed, 0, 64);
+                }
             }
         }
 

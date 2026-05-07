@@ -86,6 +86,83 @@ class ResolverTest extends TestCase
         $this->assertSame(3, $resolved->level);
     }
 
+    public function test_level_3_falls_back_to_bank_transaction_code_description(): void
+    {
+        // ING Romania fee/interest rows: empty remittance, no debtor/creditor,
+        // no additional_information — but bank_transaction_code.description
+        // carries the bank's posting category.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'bank_transaction_code' => ['description' => 'Service Fee'],
+        ]);
+
+        $this->assertSame('Service Fee', $resolved->name);
+        $this->assertSame(3, $resolved->level);
+    }
+
+    public function test_level_3_btc_description_used_when_additional_information_is_blank(): void
+    {
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'additional_information' => '   ',
+            'bank_transaction_code' => ['description' => 'Interest adjustment'],
+        ]);
+
+        $this->assertSame('Interest adjustment', $resolved->name);
+        $this->assertSame(3, $resolved->level);
+    }
+
+    public function test_level_3_additional_information_wins_over_btc_description(): void
+    {
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'additional_information' => 'Bank Fee',
+            'bank_transaction_code' => ['description' => 'Service Fee'],
+        ]);
+
+        $this->assertSame('Bank Fee', $resolved->name);
+        $this->assertSame(3, $resolved->level);
+    }
+
+    public function test_level_3_btc_description_truncates_to_64_chars(): void
+    {
+        $long = str_repeat('Y', 200);
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'bank_transaction_code' => ['description' => $long],
+        ]);
+
+        $this->assertSame(3, $resolved->level);
+        $this->assertSame(64, mb_strlen($resolved->name));
+    }
+
+    public function test_level_4_when_btc_description_missing_or_non_string(): void
+    {
+        // bank_transaction_code present but description is non-string.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'bank_transaction_code' => ['description' => null, 'code' => 'PMNT'],
+        ]);
+        $this->assertSame('(Unknown)', $resolved->name);
+        $this->assertSame(4, $resolved->level);
+
+        // bank_transaction_code present but description blank.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'bank_transaction_code' => ['description' => '   '],
+        ]);
+        $this->assertSame('(Unknown)', $resolved->name);
+        $this->assertSame(4, $resolved->level);
+
+        // bank_transaction_code is not an array.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'bank_transaction_code' => 'PMNT',
+        ]);
+        $this->assertSame('(Unknown)', $resolved->name);
+        $this->assertSame(4, $resolved->level);
+    }
+
     public function test_level_4_unknown_is_final_fallback(): void
     {
         $resolved = $this->resolver->resolve([

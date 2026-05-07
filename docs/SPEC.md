@@ -582,7 +582,7 @@ For each transaction, try in order and record which level succeeded in `counterp
 - **Level 2** — extract a counterparty from `remittance_information[0]`, truncated to 64 chars. Two strategies are tried in order:
   - **Structured CSV pattern** (ING RO Business and similar) — when the line looks like `Card number, **** XXXX, Transaction at, <MERCHANT>, Authorization date, …`, the merchant between `Transaction at, ` and `, Authorization date,` is pulled out directly.
   - **Prefix + suffix stripping** — strips known banking prefixes (`PURCHASE `, `POS `, `CARD PAYMENT `, `SEPA DD `, `SEPA CT `, BCP's `COMPRA NNNN ` / `TRF DE / MB WAY P / P / P O ` / `DD ` / `PAGSERV `) and the trailing ` CONTACTLESS` suffix some banks append to card-purchase lines.
-- **Level 3** — fall back to `additional_information` if present.
+- **Level 3** — fall back to `additional_information` if present, else `bank_transaction_code.description` if present. Both are EB-provided augmentation metadata; `additional_information` keeps priority because it's free-text and usually more specific, while `bank_transaction_code.description` carries the bank's posting category (e.g. `Service Fee`, `Interest adjustment`) for fee/interest entries with no other descriptor.
 - **Level 4** — literal `"(Unknown)"`. Transaction is flagged with a warning icon in review CLI.
 
 A SQL query grouping `bank_slug` by `counterparty_resolution_level` after a month of use tells us which banks have good data.

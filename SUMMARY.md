@@ -1,5 +1,76 @@
 # Latest task summary
 
+## Counterparty resolver — L3 falls back to `bank_transaction_code.description` (GH #31)
+
+### What changed
+
+- `app/Services/Counterparty/Resolver.php` — L3 now tries
+  `bank_transaction_code.description` (trimmed, truncated to 64
+  chars) when `additional_information` is missing or empty. Order
+  is `additional_information` first, `bank_transaction_code.description`
+  second; both produce `level=3`. L4 `(Unknown)` is unchanged for
+  rows with neither populated.
+- `app/Console/Commands/Spendula/CounterpartyRulesAddCommand.php` —
+  the private `resolveLikeResolver()` ladder duplicate (used by the
+  rules-add impact preview) gets the same fallback so the preview
+  matches the live resolver.
+- `tests/Unit/Services/Counterparty/ResolverTest.php` — five new
+  unit tests cover the BTC-description fallback, the
+  `additional_information`-wins priority, the 64-char truncation,
+  the whitespace-only `additional_information` skip, and the L4
+  fall-through when `bank_transaction_code` is missing, non-array,
+  or has a non-string/blank `description`.
+- `docs/SPEC.md` §6.8 — Level 3 bullet now describes the fallback
+  chain explicitly.
+
+### Assumptions made
+
+- **`bank_transaction_code.description` is bank-provided
+  human-readable text.** ING Romania populates it with English
+  strings like `Service Fee` and `Interest adjustment`. Other banks
+  may send a code or a localised string. We accept that: anything
+  non-empty there is strictly more informative than `(Unknown)`. If
+  a bank turns out to send opaque codes, the right fix is a
+  per-bank L3 rule, not gating this change.
+- **Truncation at 64 chars** matches the rest of the ladder.
+- **Mock ASPSP behaviour** was not exercised in this change — the
+  fallback only fires when L0/L1/L2 all miss and
+  `additional_information` is empty, which Mock ASPSP rows do not
+  produce. Live ING Romania data is the load-bearing case.
+- **Postgres session timezone** is irrelevant here; this is a pure
+  in-memory derivation against `transactions.raw_payload` shape.
+
+### Blast radius
+
+- **`spendula:sync`** — every new `transactions` row is resolved
+  through this ladder. Rows whose ladder previously terminated at
+  L4 with a populated `bank_transaction_code.description` will now
+  be persisted with `counterparty_name` set to that description and
+  `counterparty_resolution_level = 3`.
+- **`spendula:counterparty:recompute`** — re-runs the ladder over
+  `fetched / approved / skipped` rows. Existing L4 rows with a
+  populated `bank_transaction_code.description` will move to L3.
+  `dedup_hash` is intentionally not updated by recompute, so this
+  is non-destructive on the dedup contract.
+- **`spendula:review`** — formerly L4 `(Unknown)` rows now show
+  with a meaningful payee name and lose the L4 warning icon.
+- **`spendula:push`** — already-pushed rows are not retro-updated.
+  YNAB sees the new payee text only on rows pushed after the
+  recompute.
+- **`spendula:counterparty:rules:add`** preview output stays
+  consistent with the live resolver because the duplicate ladder
+  was updated in lockstep.
+
+### Open threads
+
+- Operator should run `php artisan spendula:counterparty:recompute
+  --dry-run` then `--apply` to lift the four ING RO L4 rows
+  (`Service Fee` ×3, `Interest adjustment` ×1) up to L3.
+- No follow-up planned for opaque-code banks until one is observed
+  in production data.
+
+---
+
 ## Counterparty rule engine — JSON-driven, per-bank cleanup rules
 
 ### What changed

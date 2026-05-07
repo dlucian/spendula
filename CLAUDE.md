@@ -77,6 +77,31 @@ Production app (phase 2) will register the Tailscale URL; see SPEC §9.5.
 
 ---
 
+## Database
+
+Local dev DB: `spendula_dev` on `127.0.0.1:5432` (user `lucian`, no password). Connect with `psql spendula_dev`. The test DB is `spendula_test` (per `phpunit.xml`); never query it for diagnostics. Production DB is `spendula` inside the Compose stack.
+
+Schema (compact: `table: col1,col2,…`). Authoritative shape lives in `database/migrations/`; this list is for orientation only.
+
+- `banks`: slug,display_name,aspsp_name,aspsp_country,psu_type,default_currency,sync_lookback_days,active,created_at,updated_at
+- `bank_connections`: id,bank_slug,enable_banking_session_id,status,authorized_at,valid_until,superseded_by_id,raw_session_response,last_synced_at,created_at,updated_at
+- `bank_account_sessions`: id,bank_connection_id,bank_account_id,enable_banking_uid,created_at,updated_at
+- `bank_accounts`: id,bank_slug,display_name,iban,currency,is_base_currency,ynab_account_id,ynab_account_type,import_cutoff_date,active,first_linked_at,last_seen_at,created_at,updated_at
+- `bank_account_identifiers`: id,bank_account_id,hash,is_primary,first_seen_at,last_seen_at,created_at,updated_at
+- `bank_account_sync_state`: bank_account_id,last_successful_sync_at,last_fetched_through,last_continuation_key,last_sync_error_at,consecutive_failure_count,created_at,updated_at
+- `transactions`: id,bank_account_id,dedup_hash,entry_reference,status,transaction_status,booking_date,value_date,amount_milliunits,currency,credit_debit_indicator,counterparty_name,counterparty_resolution_level,remittance_information,raw_payload,occurrence,ynab_transaction_id,ynab_import_id,push_attempt_count,last_push_attempt_at,last_push_error,pushed_at,skipped_at,skip_reason,first_seen_at,last_updated_from_bank_at,created_at,updated_at
+- `auth_requests`: id,state,bank_slug,expires_at,consumed_at,created_at,updated_at
+- `sync_runs`: id,bank_slug,started_at,finished_at,transactions_inserted,transactions_updated,transactions_deduped,error_count,created_at,updated_at
+- `sync_run_errors`: id,sync_run_id,bank_account_id,error_type,error_detail,http_status,created_at
+- `push_runs`: id,started_at,finished_at,transactions_pushed,transactions_duplicate,error_count,created_at,updated_at
+- `push_run_errors`: id,push_run_id,transaction_id,error_type,error_detail,http_status,created_at
+- `exchange_rates`: id,base_currency,quote_currency,rate_date,rate,source,created_at,updated_at
+- `tracking_snapshots`: id,bank_account_id,as_of_date,native_balance_milliunits,base_balance_milliunits,exchange_rate,exchange_rate_source,ynab_transaction_id,pushed_at,created_at,updated_at
+
+Notes: `bank_slug` is denormalised onto `bank_connections`, `bank_accounts`, `sync_runs` and `auth_requests` — `transactions` does **not** carry it. Aggregations across banks join `transactions.bank_account_id → bank_accounts.id` and read `bank_accounts.bank_slug`. `transactions` keeps the full EB envelope in `raw_payload` (jsonb); derived columns (`counterparty_name`, `counterparty_resolution_level`, `amount_milliunits`, `currency`, `credit_debit_indicator`, etc.) are extractions, not the source of truth.
+
+---
+
 ## Architecture constraints
 
 Hard boundaries. These are the temptations Claude Code is most likely to drift into; resist them.
