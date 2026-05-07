@@ -25,4 +25,33 @@ return [
         'base_url' => env('SPENDULA_EXCHANGE_RATE_BASE_URL', 'https://api.frankfurter.dev/v1'),
     ],
 
+    // GH #39 — auto-decision rule guards. Names that resolve to one of
+    // these are NEVER converted into a payee_rules entry on first
+    // decision; the operator can still decide each transaction manually,
+    // but no rule is recorded that would silently auto-apply on future
+    // syncs. Two reasons for the bake-in:
+    //   - bank_internal_payees: PSD2 reporters sometimes use the bank's
+    //     own brand as the counterparty when no real party is encoded
+    //     (in-app top-ups, fee instruments). Same name → multiple
+    //     unrelated transaction kinds.
+    //   - operator_names: the operator's own legal name surfaces both
+    //     as ATM withdrawals (skip-or-cash-spend) and as self-transfers
+    //     (transfer). Same name → opposite verdicts.
+    // Comparison is exact, case-insensitive. No wildcard / prefix
+    // matching — list each variant explicitly. If pattern matching
+    // becomes a real need, extend isOnDenylist() in PayeeRuleRecorder
+    // and revisit this comment.
+    'payee_rule_guards' => [
+        'bank_internal_payees' => [
+            'REVOLUT',
+            'ING BANK', 'ING-V', 'ING ROMANIA',
+            'ATM', 'ATM WITHDRAWAL',
+            'BCP', 'MILLENNIUM BCP',
+        ],
+        'operator_names' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('SPENDULA_OPERATOR_NAMES', '')),
+        ))),
+    ],
+
 ];

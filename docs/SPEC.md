@@ -625,6 +625,21 @@ A SQL query grouping `bank_slug` by `counterparty_resolution_level` after a mont
 
 A `--bulk-approve-trivial` flag auto-approves transactions where `counterparty_resolution_level <= 1` AND `currency = SPENDULA_BASE_CURRENCY`. Off by default; opt-in for confident operators.
 
+#### 7.1.1 Auto-decision rules (GH #39)
+
+Spendula remembers the operator's verdict per `(bank_slug, counterparty_name)` pair in the `payee_rules` table and auto-applies it on subsequent runs of `spendula:review`. The pipeline has three integration points:
+
+- **Auto-create** — every interactive `a`/`s`/`t` decision in §7.1 also calls `PayeeRuleRecorder::record()`. A new rule is inserted only when none exists yet for the pair AND the rule passes guards: `counterparty_resolution_level < 4`, non-blank `counterparty_name`, and the name is not on the bank-internal denylist (`config('spendula.payee_rule_guards.bank_internal_payees')`) or the operator-name denylist (`config('spendula.payee_rule_guards.operator_names')`, populated from `SPENDULA_OPERATOR_NAMES`). The denylist comparison is case-insensitive. Mass-approved rows from `--bulk-approve-trivial` do NOT generate rules — they bypass the interactive decision path.
+- **Auto-apply** — before the interactive loop opens, `PayeeRuleEngine::applyRules()` walks the `fetched` queue and routes any matching transaction through `TransactionActions` (so `skipped_at` / `skip_reason` are stamped exactly as for a manual decision). The match key is exact case-sensitive equality on `(bank_slug, counterparty_name)`. Auto-applied rows leave the `fetched` pool and are NOT re-prompted in the main loop.
+- **Override** — when at least one row was auto-applied, the session opens with a summary line (`Auto-applied: N approved, M skipped, K transferred.`) and a `Show details? [y/N]` prompt. Answering `y` enters an override sub-loop over the auto-applied rows with keys `[a]pprove [s]kip [t]ransfer [k]eep [d]etails [q]uit`. Picking an action that differs from the rule's current action triggers a conflict prompt: `[u]pdate rule  [d]elete rule  [k]eep rule (one-off)`. Picking the same action as the rule (e.g. confirming an auto-approve) does not prompt.
+
+Two artisan commands round out out-of-band rule management:
+
+- `spendula:rules:list [--bank=<slug>]` prints `id  bank_slug  counterparty_name  action  (skip_reason)` per rule.
+- `spendula:rules:delete <id>` hard-deletes one rule by UUID. Exit non-zero on missing id.
+
+Both commands operate without the `REVIEW` advisory lock — they are operator-driven housekeeping, not transaction-mutating.
+
 ### 7.2 Push command
 
 `spendula:push`:

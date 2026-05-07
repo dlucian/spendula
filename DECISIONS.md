@@ -27,3 +27,30 @@ Architectural choices, alternatives considered, and the constraints that drove t
 - **Harder:** rules that need to inspect *both* a name and a remittance simultaneously (e.g. rewrite the holder-name to `ATM withdrawal` only when the remittance starts with `Cash at`) cannot be expressed in `name_rules` as designed. That's the deferred ATM case from the issue. Solving it cleanly needs a schema extension (rule predicate over a second field) and is its own follow-up issue.
 - **Slightly worse:** the `RuleLoader` now caches two lists per bank slug (the `forBank` cache for `rules` and the `nameCache` for `name_rules`). Two cache misses on first access for a bank that consults both. Acceptable for v1; collapse into one bundled load if it ever shows up in profiling.
 
+
+---
+
+## 2026-05-07 — Auto-decision rules: separate `payee_rules` table, hard-delete, denylist instead of disambiguation (GH #39)
+
+**Decision.** Auto-apply per-`(bank_slug, counterparty_name)` review verdicts via a new `payee_rules` table. The rule action reuses `TransactionStatus` values (`approved`, `skipped`, `transfer`). Lifecycle is hard-delete via `spendula:rules:delete`. Names that legitimately resolve to multiple verdicts (the operator's own legal name, bank-internal generics like `REVOLUT`) are kept *out* of the rule table by a config-driven denylist; the auto-decision pipeline silently declines to record a rule when a guard trips.
+
+**Alternatives considered.**
+
+1. *Bake the auto-apply onto `transactions.counterparty_name` itself, e.g. as a JSON column or a `transactions.auto_action` derived during sync.* Rejected: the verdict is operator metadata, not bank metadata. Conflating them couples sync to review state.
+2. *Use the existing `name_rules` engine to also encode "auto-approve" / "auto-skip" actions.* Rejected: `name_rules` is a name-cleanup pipeline (string-to-string). Adding actions would overload its semantics, and rule files are checked into `config/` — they're conventions, not per-operator decisions.
+3. *Soft-delete via `superseded_by_id`, mirroring `bank_connections`.* Rejected: rules are operator-managed metadata, not a regulated audit trail. PSD2 does not require rule history; the operator already has git history of `config/` changes if they care, and `payee_rules` rows aren't config. Hard-delete keeps the data model trivial; revisit if a real audit need appears.
+4. *Solve the ATM-vs-self-transfer ambiguity by extending the rule schema with a remittance predicate (rule conditional on a second field).* Deferred to its own issue. The denylist short-circuits the ambiguous-by-name case at the cost of forcing the operator to decide each transaction manually for those payees — fine for v1.
+
+**Constraints.**
+
+- The push pipeline (§7.2) and the L0–L4 counterparty resolver (§6.8) must not change behaviour. Auto-decision only mutates rows transitioning `fetched` → `approved`/`skipped`/`transfer`, exactly as a manual decision would.
+- The match key must be deterministic. Once `name_rules` (#33) canonicalised L0/L1 names, exact `(bank_slug, counterparty_name)` equality is enough; fuzzy matching would couple the engine to a similarity threshold that can't be revisited without re-evaluating every existing rule.
+- The first-decision write must not silently overwrite an existing rule. Operator decisions are authoritative, but the *first* one for a payee is special — every subsequent decision for that pair runs through auto-apply, not record. The override path (§7.1.1) is the only place an existing rule can change.
+
+**Consequences.**
+
+- **Easier:** the operator decides each payee once and never again.
+- **Easier:** rule storage is independent of `transactions.raw_payload` — recomputing counterparty resolution doesn't invalidate any rule.
+- **Easier:** auditing and pruning live in `spendula:rules:list` / `:delete` without an HTTP surface.
+- **Harder:** two payees that *should* share a rule but render with different `counterparty_name` values (case drift, post-rule cleanup) won't auto-apply across that boundary. Fix by tightening the upstream `name_rules` rather than relaxing this engine.
+- **Harder:** the denylist sidesteps the ATM/self-transfer ambiguity; the operator still re-decides every transaction for those payees. The proper fix (rule predicate over remittance) is queued as a separate follow-up.

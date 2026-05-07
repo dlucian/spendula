@@ -3,6 +3,7 @@
 namespace App\Services\Review;
 
 use App\Enums\TransactionStatus;
+use App\Models\PayeeRule;
 use App\Models\Transaction;
 use App\Services\Money\Money;
 use Closure;
@@ -50,15 +51,62 @@ class ReviewSession
         private readonly Command $command,
         private readonly TransactionActions $actions,
         ?Closure $keyReader = null,
+        private readonly ?PayeeRuleRecorder $recorder = null,
     ) {
         $this->keyReader = $keyReader;
     }
 
     /**
+     * Run the interactive review loop. When `$autoAppliedIds` is non-empty,
+     * the loop first prints a summary line and offers the operator a
+     * "show details? [y/N]" prompt; answering yes opens an override
+     * sub-loop over the auto-applied rows where the operator can flip
+     * any decision and (optionally) update or delete the underlying
+     * payee_rules entry.
+     *
+     * Each interactive decision in the main loop also calls
+     * `PayeeRuleRecorder::record()` so future syncs can auto-apply the
+     * same verdict — gated by the recorder's denylist + resolution-level
+     * guards. Mass-approved rows from `--bulk-approve-trivial` are NOT
+     * recorded (they bypass this method entirely).
+     *
+     * @param  list<string>  $autoAppliedIds
+     * @param  array{approved: int, skipped: int, transferred: int}  $autoByAction
      * @return array{reviewed: int, approved: int, skipped: int, transferred: int, quit: bool}
      */
-    public function run(): array
+    public function run(array $autoAppliedIds = [], array $autoByAction = ['approved' => 0, 'skipped' => 0, 'transferred' => 0]): array
     {
+        if ($autoAppliedIds !== [] && $this->stdinIsTty()) {
+            $this->command->getOutput()->writeln(sprintf(
+                'Auto-applied: %d approved, %d skipped, %d transferred.',
+                $autoByAction['approved'],
+                $autoByAction['skipped'],
+                $autoByAction['transferred'],
+            ));
+            $this->command->getOutput()->write('Show details? [y/N] ');
+
+            $this->enterRawMode();
+            try {
+                $reply = strtolower($this->readKey());
+            } finally {
+                $this->leaveRawMode();
+            }
+            $this->command->getOutput()->writeln('');
+
+            if ($reply === 'y') {
+                $overrideStats = $this->runOverrideLoop($autoAppliedIds);
+                if ($overrideStats['quit']) {
+                    return [
+                        'reviewed' => 0,
+                        'approved' => 0,
+                        'skipped' => 0,
+                        'transferred' => 0,
+                        'quit' => true,
+                    ];
+                }
+            }
+        }
+
         /** @var Collection<int, Transaction> $queue */
         $queue = Transaction::query()
             ->where('status', TransactionStatus::Fetched->value)
@@ -93,9 +141,12 @@ class ReviewSession
 
         /**
          * In-memory LIFO undo stack of decisions made in this session.
-         * Each entry: ['transaction' => Transaction, 'statKey' => 'approved'|'skipped'|'transferred'].
+         * Each entry: ['transaction' => Transaction, 'statKey' => 'approved'|'skipped'|'transferred', 'createdRuleId' => ?string].
+         * `createdRuleId` is the UUID of the payee_rules row that was inserted
+         * by this decision (null when the recorder declined to create one,
+         * e.g. AlreadyExists or SkippedByGuard, or when no recorder is wired).
          *
-         * @var list<array{transaction: Transaction, statKey: string}> $undoStack
+         * @var list<array{transaction: Transaction, statKey: string, createdRuleId: ?string}> $undoStack
          */
         $undoStack = [];
 
@@ -123,7 +174,16 @@ class ReviewSession
                         switch ($key) {
                             case 'a':
                                 $this->actions->approve($transaction);
-                                $undoStack[] = ['transaction' => $transaction, 'statKey' => 'approved'];
+                                $createdRuleId = $this->recordAndCaptureRuleId(
+                                    $transaction,
+                                    TransactionStatus::Approved,
+                                    null,
+                                );
+                                $undoStack[] = [
+                                    'transaction' => $transaction,
+                                    'statKey' => 'approved',
+                                    'createdRuleId' => $createdRuleId,
+                                ];
                                 $stats['approved']++;
                                 $stats['reviewed']++;
                                 $keep = false;
@@ -133,8 +193,18 @@ class ReviewSession
                                 $this->leaveRawMode();
                                 $reason = (string) $this->command->ask('Skip reason (blank = none)', '');
                                 $this->enterRawMode();
-                                $this->actions->skip($transaction, $reason !== '' ? $reason : null);
-                                $undoStack[] = ['transaction' => $transaction, 'statKey' => 'skipped'];
+                                $skipReason = $reason !== '' ? $reason : null;
+                                $this->actions->skip($transaction, $skipReason);
+                                $createdRuleId = $this->recordAndCaptureRuleId(
+                                    $transaction,
+                                    TransactionStatus::Skipped,
+                                    $skipReason,
+                                );
+                                $undoStack[] = [
+                                    'transaction' => $transaction,
+                                    'statKey' => 'skipped',
+                                    'createdRuleId' => $createdRuleId,
+                                ];
                                 $stats['skipped']++;
                                 $stats['reviewed']++;
                                 $keep = false;
@@ -142,7 +212,16 @@ class ReviewSession
 
                             case 't':
                                 $this->actions->markTransfer($transaction);
-                                $undoStack[] = ['transaction' => $transaction, 'statKey' => 'transferred'];
+                                $createdRuleId = $this->recordAndCaptureRuleId(
+                                    $transaction,
+                                    TransactionStatus::Transfer,
+                                    null,
+                                );
+                                $undoStack[] = [
+                                    'transaction' => $transaction,
+                                    'statKey' => 'transferred',
+                                    'createdRuleId' => $createdRuleId,
+                                ];
                                 $stats['transferred']++;
                                 $stats['reviewed']++;
                                 $keep = false;
@@ -247,9 +326,14 @@ class ReviewSession
      *     `fetched` here would leave stale push metadata that masks the
      *     row from re-push forever.
      *
-     * Mutates `$undoStack` and `$stats` only on a successful revert.
+     * Mutates `$undoStack` and `$stats` only on a successful revert. When
+     * a successful revert happens AND the original decision created a
+     * payee_rules row, that rule is also hard-deleted — otherwise an
+     * undone first-time decision would leave a stale rule that
+     * auto-applies to future transactions even though the operator
+     * corrected themselves (GH #39 codex finding P1).
      *
-     * @param  list<array{transaction: Transaction, statKey: string}>  $undoStack
+     * @param  list<array{transaction: Transaction, statKey: string, createdRuleId: ?string}>  $undoStack
      * @param  array{reviewed:int,approved:int,skipped:int,transferred:int,quit:bool}  $stats
      */
     private function popAndRevert(array &$undoStack, array &$stats): ?Transaction
@@ -260,7 +344,7 @@ class ReviewSession
             return null;
         }
 
-        /** @var array{transaction: Transaction, statKey: 'approved'|'skipped'|'transferred'} $entry */
+        /** @var array{transaction: Transaction, statKey: 'approved'|'skipped'|'transferred', createdRuleId: ?string} $entry */
         $entry = array_pop($undoStack);
         $fresh = $entry['transaction']->fresh() ?? $entry['transaction'];
 
@@ -281,6 +365,13 @@ class ReviewSession
         }
 
         $this->actions->revertToFetched($fresh);
+
+        if ($entry['createdRuleId'] !== null && $this->recorder !== null) {
+            $rule = PayeeRule::query()->whereKey($entry['createdRuleId'])->first();
+            if ($rule !== null) {
+                $this->recorder->delete($rule);
+            }
+        }
 
         $undoLabel = match ($entry['statKey']) {
             'approved' => 'approved',
@@ -339,6 +430,228 @@ class ReviewSession
         $this->command->getOutput()->writeln((string) json_encode($transaction->raw_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
         $this->command->getOutput()->writeln('');
         $this->enterRawMode();
+    }
+
+    /**
+     * Override sub-loop (GH #39): walks every auto-applied transaction
+     * and offers a/s/t/d/q. A different action than the rule's current
+     * action triggers the conflict prompt: update / delete / keep
+     * (one-off). The prompt is the only place a rule can be revised
+     * without going through `spendula:rules:delete` + a fresh decision.
+     *
+     * Returns `quit=true` only when the operator pressed `q`. The main
+     * caller treats that as a session-wide quit so the interactive loop
+     * doesn't continue after the operator has bailed out.
+     *
+     * @param  list<string>  $autoAppliedIds
+     * @return array{quit: bool}
+     */
+    private function runOverrideLoop(array $autoAppliedIds): array
+    {
+        if ($this->recorder === null) {
+            return ['quit' => false];
+        }
+
+        /** @var Collection<int, Transaction> $rows */
+        $rows = Transaction::query()
+            ->whereIn('id', $autoAppliedIds)
+            ->with('bankAccount.bank')
+            ->orderBy('bank_account_id')
+            ->orderBy('booking_date')
+            ->orderBy('occurrence')
+            ->get();
+
+        $total = $rows->count();
+        $position = 0;
+
+        $this->enterRawMode();
+        try {
+            foreach ($rows as $transaction) {
+                $position++;
+                $this->printHeader($transaction, $position, $total);
+                $this->command->getOutput()->writeln(sprintf(
+                    'Auto-applied: %s. Override?',
+                    $transaction->status->value,
+                ));
+
+                $keep = true;
+                while ($keep) {
+                    $this->command->getOutput()->write('[a]pprove  [s]kip  [t]ransfer  [k]eep  [d]etails  [q]uit > ');
+                    $key = strtolower($this->readKey());
+                    $this->command->getOutput()->writeln('');
+
+                    switch ($key) {
+                        case 'a':
+                            $this->overrideTo($transaction, TransactionStatus::Approved, null);
+                            $keep = false;
+                            break;
+
+                        case 's':
+                            $this->leaveRawMode();
+                            $reason = (string) $this->command->ask('Skip reason (blank = none)', '');
+                            $this->enterRawMode();
+                            $this->overrideTo($transaction, TransactionStatus::Skipped, $reason !== '' ? $reason : null);
+                            $keep = false;
+                            break;
+
+                        case 't':
+                            $this->overrideTo($transaction, TransactionStatus::Transfer, null);
+                            $keep = false;
+                            break;
+
+                        case 'k':
+                            // Keep the auto-applied verdict and the rule unchanged.
+                            $keep = false;
+                            break;
+
+                        case 'd':
+                            $this->printDetails($transaction);
+                            break;
+
+                        case 'q':
+                            return ['quit' => true];
+
+                        default:
+                            break;
+                    }
+                }
+            }
+        } finally {
+            $this->leaveRawMode();
+        }
+
+        return ['quit' => false];
+    }
+
+    /**
+     * Apply an override action to `$transaction`, then prompt the
+     * operator about the rule that auto-applied to it: update the rule
+     * to the new action, delete the rule (decide each time going
+     * forward), or keep the rule as-is (treat this transaction as a
+     * one-off override).
+     */
+    private function overrideTo(Transaction $transaction, TransactionStatus $newAction, ?string $skipReason): void
+    {
+        if ($this->recorder === null) {
+            return;
+        }
+
+        // GH #39 codex finding P2 — push runs under a different advisory
+        // lock, so an auto-applied row may have advanced to `pushed`
+        // while the operator was sitting in the override sub-loop.
+        // Refuse to override if the row is no longer at one of the
+        // post-decision states; otherwise we would resurrect a pushed
+        // row to `approved`/`transfer`/`skipped`.
+        $fresh = $transaction->fresh();
+        if ($fresh === null) {
+            return;
+        }
+        $expected = [TransactionStatus::Approved, TransactionStatus::Skipped, TransactionStatus::Transfer];
+        if (! in_array($fresh->status, $expected, true)) {
+            $this->command->getOutput()->writeln(sprintf(
+                '⚠ cannot override: %s has advanced to %s (likely pushed in another session).',
+                $fresh->id,
+                $fresh->status->value,
+            ));
+
+            return;
+        }
+
+        match ($newAction) {
+            TransactionStatus::Approved => $this->actions->approve($fresh),
+            TransactionStatus::Skipped => $this->actions->skip($fresh, $skipReason),
+            TransactionStatus::Transfer => $this->actions->markTransfer($fresh),
+            default => null,
+        };
+
+        $rule = $this->recorder->findFor($fresh);
+        if ($rule === null) {
+            // Rare: rule was hand-deleted between auto-apply and the
+            // override prompt. Nothing to update.
+            return;
+        }
+
+        if ($rule->action === $newAction) {
+            // Operator picked the same action the rule already prescribes.
+            // Usually no conflict — confirming an auto-approve / auto-transfer
+            // is a no-op for the rule. Exception: a skip whose reason differs
+            // from the rule's stored reason. That's the only in-session path
+            // to revise a skipped rule's reason, so route it through the
+            // conflict prompt (round-2 codex finding P2).
+            if ($newAction !== TransactionStatus::Skipped) {
+                return;
+            }
+            // Normalise both sides the same way `TransactionActions::skip()`
+            // and `PayeeRuleRecorder::record()` already do (trim → empty
+            // becomes null), otherwise leading/trailing whitespace re-entry
+            // spuriously triggers the conflict prompt (round-5 codex P3).
+            if ($this->normalizeReason($skipReason) === $this->normalizeReason($rule->skip_reason)) {
+                return;
+            }
+        }
+
+        $this->command->getOutput()->writeln(sprintf(
+            'Rule "%s → %s" currently auto-applies %s.',
+            $rule->bank_slug,
+            $rule->counterparty_name,
+            $rule->action->value,
+        ));
+
+        $resolution = $this->promptRuleConflict();
+        match ($resolution) {
+            'u' => $this->recorder->update($rule, $newAction, $skipReason),
+            'd' => $this->recorder->delete($rule),
+            default => null, // 'k' or unknown → keep rule as-is.
+        };
+    }
+
+    /**
+     * Run `PayeeRuleRecorder::record()` and capture the id of the
+     * newly-inserted rule (when one was inserted), for later cleanup
+     * by `popAndRevert()`. Returns null when no recorder is wired,
+     * when a rule already existed for the (bank, payee) pair, or when
+     * a guard tripped — none of those cases should be undone.
+     */
+    private function recordAndCaptureRuleId(
+        Transaction $transaction,
+        TransactionStatus $action,
+        ?string $skipReason,
+    ): ?string {
+        if ($this->recorder === null) {
+            return null;
+        }
+        $result = $this->recorder->record($transaction, $action, $skipReason);
+        if ($result !== RecordResult::Created) {
+            return null;
+        }
+
+        // record() doesn't return the model itself, but the rule must
+        // exist now — re-load by (bank_slug, counterparty_name) to
+        // grab the id. One extra query per interactive decision is
+        // negligible compared to the human's keypress latency.
+        return $this->recorder->findFor($transaction)?->id;
+    }
+
+    private function normalizeReason(?string $reason): ?string
+    {
+        if ($reason === null) {
+            return null;
+        }
+        $trimmed = trim($reason);
+
+        return $trimmed === '' ? null : $trimmed;
+    }
+
+    private function promptRuleConflict(): string
+    {
+        while (true) {
+            $this->command->getOutput()->write('[u]pdate rule  [d]elete rule  [k]eep rule (one-off) > ');
+            $key = strtolower($this->readKey());
+            $this->command->getOutput()->writeln('');
+            if (in_array($key, ['u', 'd', 'k'], true)) {
+                return $key;
+            }
+        }
     }
 
     private function readKey(): string

@@ -1,5 +1,49 @@
 # Latest task summary
 
+## Auto-decision rules: remember approve/skip/transfer per (bank, payee) (GH #39)
+
+### What changed
+
+- New table `payee_rules` (`database/migrations/2026_05_07_171806_create_payee_rules_table.php`): `id`, `bank_slug` FK to `banks`, `counterparty_name`, `action` (CHECK in approved/skipped/transfer), `skip_reason` text nullable (CHECK: non-null only when action='skipped'), unique on `(bank_slug, counterparty_name)`, standard timestampTz timestamps.
+- New model `app/Models/PayeeRule.php` reusing `HasUuidV7`, casting `action` to `TransactionStatus`.
+- New service `app/Services/Review/PayeeRuleRecorder.php` with `record()` (creates a rule on first interactive decision; `RecordResult::Created`/`AlreadyExists`/`SkippedByGuard`), `findFor()`, `update()`, `delete()`. Guards: resolution level ≥ 4, blank counterparty_name, name on bank-internal denylist or operator-name denylist (case-insensitive).
+- New service `app/Services/Review/PayeeRuleEngine.php` with `applyRules(Collection $queue)`: bulk-loads matching rules (one query for all distinct `(bank_slug, counterparty_name)` keys in the queue), routes each match through `TransactionActions::approve|skip|markTransfer`. Returns `appliedIds` + `byAction` summary.
+- New enum `app/Services/Review/RecordResult.php` (Created / AlreadyExists / SkippedByGuard).
+- New artisan commands `spendula:rules:list [--bank=]` and `spendula:rules:delete <id>` under `app/Console/Commands/Spendula/`. Both lock-free.
+- `config/spendula.php` adds `payee_rule_guards.bank_internal_payees` (built-in) and `payee_rule_guards.operator_names` (split from `SPENDULA_OPERATOR_NAMES`).
+- `.env.example` documents `SPENDULA_OPERATOR_NAMES=`.
+- `app/Console/Commands/Spendula/ReviewCommand.php` injects the engine + recorder, runs auto-apply over the `fetched` queue before the interactive session, and passes `appliedIds` / `byAction` into `ReviewSession::run()`.
+- `app/Services/Review/ReviewSession.php` now (a) prints the auto-apply summary line and `Show details? [y/N]` when `autoAppliedIds` is non-empty, (b) runs an override sub-loop for those rows offering `[a][s][t][k][d][q]` plus a conflict prompt `[u]pdate / [d]elete / [k]eep` when the override action differs from the rule, (c) calls `PayeeRuleRecorder::record()` after each interactive `a`/`s`/`t` decision in the main loop. Constructor signature: `(Command, TransactionActions, ?Closure $keyReader = null, ?PayeeRuleRecorder $recorder = null)` — keyReader stays at position 3 so existing tests are unaffected.
+- `docs/SPEC.md` §7.1.1 documents the auto-decision pipeline (auto-create / auto-apply / override) and the two new artisan commands.
+- `DECISIONS.md` appends GH #39 entry: separate-table over JSON-on-transactions, hard-delete over `superseded` lifecycle, denylist over remittance-predicate disambiguation.
+- New tests: `tests/Feature/Services/Review/PayeeRuleRecorderTest.php` (12 tests on guards + create/update/delete/findFor), `PayeeRuleEngineTest.php` (7 tests on bulk apply, isolation, case-sensitivity), `ReviewSessionPayeeRulesTest.php` (9 tests on summary, override, conflict prompt branches), `RulesListCommandTest.php` (4 tests), `RulesDeleteCommandTest.php` (2 tests). Existing `ReviewSessionTest` and `ReviewCommandTest` unchanged and still green.
+
+### Assumptions made
+
+- Mock ASPSP behaviour assumed identical to production EB: post-`name_rules` `counterparty_name` is canonical and stable across syncs.
+- Match key is exact `(bank_slug, counterparty_name)` equality, case-sensitive — relies on the L0/L1 `name_rules` pipeline (#33) to canonicalise names beforehand. `Bolt.eu` and `BOLT.EU` would NOT auto-apply across each other.
+- `bulkApproveTrivial` rows do NOT generate rules (they bypass `ReviewSession::run()`).
+- Auto-applied rows are skipped from the main interactive loop because they are no longer at status `fetched`.
+- Postgres session timezone was UTC during the test run; CHECK constraints fire on insert (not on read).
+- The advisory lock `REVIEW` continues to be the only lock the review pipeline acquires; the engine and recorder are invoked under it via `ReviewCommand`.
+
+### Blast radius
+
+- **`ReviewCommand`**: now has 3 injected services instead of 1. Existing `--bulk-approve-trivial` flag still works the same.
+- **`ReviewSession::run()`**: signature changed from `run(): array` to `run(array $autoAppliedIds = [], array $autoByAction = [...]): array`. Defaults preserve the existing call surface so external callers (none in repo) and tests calling `$session->run()` with no args still work.
+- **`ReviewSession::__construct`**: added optional 4th parameter `?PayeeRuleRecorder`. Existing 3rd-arg `Closure` keyReader call sites are unaffected.
+- **`TransactionActions`**: untouched. Both engine (auto-apply path) and override sub-loop call through it for state mutations, so undo / push semantics are preserved.
+- **Rule lifecycle**: a stale rule (operator changed mind) is fixable via `spendula:rules:delete <id>` or via the override path. There is no automatic rule-staleness detection.
+
+### Open threads
+
+- **Intra-session auto-apply**: if the operator interactively decides "approve Spotify" and the queue has 4 more pending Spotify rows, those 4 rows are still decided manually because auto-apply ran once at session start. Future improvement: after each interactive decision creates a rule, scan the remainder of the queue for matches and apply in-place. Adds undo-stack complexity; deferred.
+- **ATM-vs-self-transfer ambiguity**: still mitigated only by adding the operator's name(s) to `SPENDULA_OPERATOR_NAMES`. The proper fix (rule conditional on a remittance predicate) remains a separate follow-up.
+- **Rule normalization**: case-insensitive matching is one config flag away. Decision today: keep it strict; relax only if drift becomes a real problem.
+- **Bank-account scoping**: rules are per-`(bank_slug, counterparty_name)` not per-`(bank_account_id, counterparty_name)`. If the operator has two accounts under the same bank slug (e.g. "ING-RO Personal" and "ING-RO Business" sharing slug `ing-ro`) and the same payee should auto-apply differently per account, the current schema can't express that. Add a nullable `bank_account_id` column if a real need appears.
+
+---
+
 ## Counterparty cleanup at L0/L1 via `name_rules` (GH #33)
 
 ### What changed
