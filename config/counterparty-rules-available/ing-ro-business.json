@@ -4,12 +4,12 @@
   "rules": [
     {
       "name": "card-twilio",
-      "description": "Twilio card transaction — booking reference (uppercase alphanumeric, 8+ chars) is appended after the 'Twilio' merchant tag with a space. Drop the ref so per-API-call charges aggregate to one payee. Country + support phone tail is kept (it's identical across all Twilio rows). Distinct from 'WWW.TWILIO.COM IE DUBLIN' which has no embedded ref and is handled by the generic card-purchase rule.",
-      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(Twilio)\\s+[A-Z0-9]{8,}\\s+(.+?)(?:,\\s*Authorization date,.*)?$/iu",
-      "replacement": "$1 $2",
-      "post": ["trim", "collapse"],
+      "description": "Twilio card transaction — booking reference (uppercase alphanumeric, 8+ chars) sits between the 'Twilio' tag and the trailing 'US <support-phone>' identical across rows. Collapse the entire row to 'Twilio' so per-API-call charges aggregate to one payee. Distinct from 'WWW.TWILIO.COM IE DUBLIN' (no embedded ref) which falls through to structured-card-purchase.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*Twilio\\s+[A-Z0-9]{8,}\\s+US\\s+\\d{3}-\\d{7}(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "Twilio",
+      "post": ["trim"],
       "tests": [
-        {"in": "Card number, **** 0429, Transaction at, Twilio JQKCHRPJMZTSC569  US  844-8144627, Authorization date, 11-03-2026, Authorization number, 044018, Amount, 50,00  USD, Settlement amount, 43,46 EUR", "out": "Twilio US 844-8144627"}
+        {"in": "Card number, **** 0429, Transaction at, Twilio JQKCHRPJMZTSC569  US  844-8144627, Authorization date, 11-03-2026, Authorization number, 044018, Amount, 50,00  USD, Settlement amount, 43,46 EUR", "out": "Twilio"}
       ]
     },
     {
@@ -45,14 +45,49 @@
       ]
     },
     {
+      "name": "card-spotify",
+      "description": "Spotify card transaction — booking reference begins with 'P' followed by alphanumerics (e.g. 'P3EF899848'); rows always book through 'SE Stockholm'. Collapse the whole row to 'Spotify' so monthly subscription rows aggregate. If a Spotify row ever books from a different locale it falls through to structured-card-purchase.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*Spotify\\s+P[A-Z0-9]+\\s+SE\\s+Stockholm(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "Spotify",
+      "post": ["trim"],
+      "tests": [
+        {"in": "Card number, **** 3600, Transaction at, Spotify P3EF899848  SE  Stockholm, Authorization date, 02-02-2026, Authorization number, 017017", "out": "Spotify"},
+        {"in": "Card number, **** 3600, Transaction at, Spotify P3FF0D4302  SE  Stockholm, Authorization date, 02-03-2026, Authorization number, 014777", "out": "Spotify"},
+        {"in": "Card number, **** 3600, Transaction at, Spotify P410A4FA76  SE  Stockholm, Authorization date, 02-04-2026, Authorization number, 000307", "out": "Spotify"}
+      ]
+    },
+    {
+      "name": "card-2c2p-lazada",
+      "description": "2C2P payment-processor row routed for Lazada (their Asian e-commerce arm). Shape: 'WWW.2C2P.COM*LAZADA PAY  TH  BANGKOK'. Drop the processor prefix, the 'PAY' suffix, and the location; emit 'Lazada' so all Lazada orders aggregate.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*WWW\\.2C2P\\.COM\\*LAZADA\\s+PAY\\s+TH\\s+BANGKOK(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "Lazada",
+      "post": ["trim"],
+      "tests": [
+        {"in": "Card number, **** 0429, Transaction at, WWW.2C2P.COM*LAZADA PAY  TH  BANGKOK, Authorization date, 16-02-2026, Authorization number, 065220, Amount, 3.476,00  THB, Settlement amount, 94,38 EUR", "out": "Lazada"},
+        {"in": "Card number, **** 0429, Transaction at, WWW.2C2P.COM*LAZADA PAY  TH  BANGKOK, Authorization date, 26-02-2026, Authorization number, 050701, Amount, 4.661,02  THB, Settlement amount, 127,96 EUR", "out": "Lazada"}
+      ]
+    },
+    {
+      "name": "card-2c2p-truncated",
+      "description": "2C2P payment-processor row where the merchant tag itself is opaquely truncated (e.g. 'BAN'). Shape: '2C2P   *<TAG>  TH  BANGKOK'. Keep the '2C2P' qualifier so the truncated tag is still identifiable; emit '2C2P <TAG>'. If the real merchant ever surfaces in the wild, sharpen this rule then.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*2C2P\\s+\\*(\\S+)\\s+TH\\s+BANGKOK(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "2C2P $1",
+      "post": ["trim"],
+      "tests": [
+        {"in": "Card number, **** 0429, Transaction at, 2C2P   *BAN  TH  BANGKOK, Authorization date, 25-02-2026, Authorization number, 530612, Amount, 12.960,00  THB, Settlement amount, 356,38 EUR", "out": "2C2P BAN"}
+      ]
+    },
+    {
       "name": "structured-card-purchase",
-      "description": "Card purchase: 'Card number, **** XXXX, Transaction at, MERCHANT, Authorization date, ...'. Capture the merchant; the trailing fields (authorization date / number / amount / settlement) are noise.",
+      "description": "Card purchase: 'Card number, **** XXXX, Transaction at, MERCHANT, Authorization date, ...'. Capture the merchant; the trailing fields (authorization date / number / amount / settlement) are noise. Acts as the catch-all for card rows after the merchant-specific rules above; near-miss shapes (e.g. a Spotify booking outside SE Stockholm, or a Twilio row with no embedded reference) land here intact.",
       "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(?P<merchant>.+?)(?:,\\s*Authorization date,.*)?$/iu",
       "replacement": "$1",
       "post": ["trim"],
       "tests": [
         {"in": "Card number, **** 0429, Transaction at, GITHUB, INC.  US  GITHUB.COM, Authorization date, 24-04-2026, Authorization number, 071280, Amount, 4,00  USD, Settlement amount, 3,43 EUR", "out": "GITHUB, INC.  US  GITHUB.COM"},
-        {"in": "Card number, **** 0429, Transaction at, ELEVENLABS.IO  US  ELEVENLABS.IO", "out": "ELEVENLABS.IO  US  ELEVENLABS.IO"}
+        {"in": "Card number, **** 0429, Transaction at, ELEVENLABS.IO  US  ELEVENLABS.IO", "out": "ELEVENLABS.IO  US  ELEVENLABS.IO"},
+        {"in": "Card number, **** 3600, Transaction at, Spotify Premium  US  San Francisco, Authorization date, 02-04-2026, Authorization number, 999999", "out": "Spotify Premium  US  San Francisco"},
+        {"in": "Card number, **** 0429, Transaction at, WWW.TWILIO.COM  IE  DUBLIN, Authorization date, 11-03-2026, Authorization number, 044019", "out": "WWW.TWILIO.COM  IE  DUBLIN"}
       ]
     },
     {
@@ -81,14 +116,25 @@
       ]
     },
     {
+      "name": "transfer-bugetul-de-stat",
+      "description": "Public-treasury (BUGETUL DE STAT) transfer where the beneficiary tag carries an embedded fiscal code: 'Beneficiary, BUGETUL DE STAT/<digits>, To account, ...'. Different obligations carry different codes (corporate-tax CUI, somatie ID, etc.) which fragments the YNAB payee. Collapse to 'BUGETUL DE STAT'. Sits before beneficiary-first so the more specific shape wins; rows lacking the trailing /digits fall through to beneficiary-first intact.",
+      "pattern": "/^Beneficiary,\\s*BUGETUL DE STAT\\/\\d+,\\s*To account,.*$/iu",
+      "replacement": "BUGETUL DE STAT",
+      "post": ["trim"],
+      "tests": [
+        {"in": "Beneficiary, BUGETUL DE STAT/27263785, To account, RO82TREZ6215503XXXXXXXXX, Bank, TREZORERII, Details, impozit pe profit trim.1 2026, Reference number, 946664581", "out": "BUGETUL DE STAT"},
+        {"in": "Beneficiary, BUGETUL DE STAT/1831121350057, To account, RO07TREZ6215504XXXXXXXXX, Bank, TREZORERII, Details, 1831121350057, sume cf somatie nr.353010062555379, Reference number, 945518455", "out": "BUGETUL DE STAT"}
+      ]
+    },
+    {
       "name": "beneficiary-first",
-      "description": "Transfer where the beneficiary leads (no Reference number prefix) and the reference number trails — common for tax / public-treasury (BUGETUL DE STAT) and accountant invoices: 'Beneficiary, NAME, To account, ..., Reference number, ...'.",
+      "description": "Transfer where the beneficiary leads (no Reference number prefix) and the reference number trails — common for accountant invoices and other named-counterparty transfers: 'Beneficiary, NAME, To account, ..., Reference number, ...'. The BUGETUL DE STAT/<digits> shape is handled by transfer-bugetul-de-stat above; a hypothetical BUGETUL DE STAT row without /digits would land here intact.",
       "pattern": "/^Beneficiary,\\s*(?P<name>.+?),\\s*To account,.*$/iu",
       "replacement": "$1",
       "post": ["trim", "collapse"],
       "tests": [
-        {"in": "Beneficiary, BUGETUL DE STAT/27263785, To account, RO82TREZ6215503XXXXXXXXX, Bank, TREZORERII, Details, impozit pe profit trim.1 2026, Reference number, 946664581", "out": "BUGETUL DE STAT/27263785"},
-        {"in": "Beneficiary, SC A.M. CLAR-CONT SRL, To account, RO49EXAMPLEEXAMPLE000001, Bank, ING BANK BUCURESTI CENTRALA, Details, cv fact AM5249 din 3 apr 2026, Reference number, 1775574105259925106351", "out": "SC A.M. CLAR-CONT SRL"}
+        {"in": "Beneficiary, SC A.M. CLAR-CONT SRL, To account, RO49EXAMPLEEXAMPLE000001, Bank, ING BANK BUCURESTI CENTRALA, Details, cv fact AM5249 din 3 apr 2026, Reference number, 1775574105259925106351", "out": "SC A.M. CLAR-CONT SRL"},
+        {"in": "Beneficiary, BUGETUL DE STAT, To account, RO82TREZ6215503XXXXXXXXX, Bank, TREZORERII, Reference number, 999999999", "out": "BUGETUL DE STAT"}
       ]
     },
     {

@@ -1,5 +1,97 @@
 # Latest task summary
 
+## ING Romania L2 — collapse digit-bearing names: Spotify, Twilio, BUGETUL DE STAT, Lazada, 2C2P (GH #36)
+
+### What changed
+
+- `config/counterparty-rules-available/ing-ro-business.json` (auto-shared
+  with `ing-ro-personal` via existing symlink) — three new rules and one
+  sharpened rule:
+  - `card-spotify` (new): `Spotify P<hex>  SE  Stockholm` → `Spotify`.
+    Drops the per-month booking ref *and* the location.
+  - `card-twilio` (sharpened): tighter regex requires the `US <support-phone>`
+    tail; emits `Twilio` (previously kept `US 844-8144627`). Existing test
+    fixture's expected output updated.
+  - `card-2c2p-lazada` (new): `WWW.2C2P.COM*LAZADA PAY  TH  BANGKOK` →
+    `Lazada`.
+  - `card-2c2p-truncated` (new): `2C2P   *<TAG>  TH  BANGKOK` →
+    `2C2P <TAG>` (e.g. `2C2P BAN`). Keeps the processor qualifier because
+    the merchant tag is opaquely truncated.
+  - `transfer-bugetul-de-stat` (new): `Beneficiary, BUGETUL DE STAT/<digits>,
+    To account, ...` → `BUGETUL DE STAT`. Inserted *before* `beneficiary-first`
+    so the more specific shape wins.
+- `beneficiary-first` (existing) — description updated; the
+  `BUGETUL DE STAT/27263785` test fixture relocated to the new rule and
+  replaced with a synthetic `BUGETUL DE STAT` (no /digits) shadow check
+  so the engine's fallthrough is exercised.
+- `structured-card-purchase` (existing) — description updated; two shadow
+  fixtures added (`Spotify Premium  US  San Francisco`,
+  `WWW.TWILIO.COM  IE  DUBLIN`) confirming near-miss card shapes
+  fall through intact.
+- No PHP code changes. No migrations. No new commands.
+
+Live recompute against `spendula_dev`: 11 rows renamed, 5 canonical payees
+remaining (`Spotify`, `Twilio`, `BUGETUL DE STAT`, `Lazada`, `2C2P BAN`).
+Resolution-level distribution unchanged.
+
+### Assumptions made
+
+- **Card-row envelope shape is stable.** Every regex pins the
+  `Card number, **** XXXX, Transaction at, MERCHANT(, Authorization date, ...)?`
+  envelope produced by ING Romania today. If ING ever drops the
+  `Authorization date` tail or reorders fields, these rules silently fall
+  through to the catch-all (which is the safe failure mode, not a defect).
+- **Spotify always books from `SE Stockholm`.** Live data shows three
+  consecutive months on this locale; no other Spotify shape observed. A
+  US/EU-locale Spotify row would fall through to `structured-card-purchase`,
+  not into `card-spotify`. Acceptable.
+- **Twilio's tail `US <ddd-ddddddd>` is constant.** The current support
+  phone `844-8144627` matches `\d{3}-\d{7}`. If Twilio rotates phones,
+  the digit shape still holds; if they ever route through a non-US locale,
+  it falls to `structured-card-purchase`.
+- **2C2P's `BAN` is genuinely opaque.** We collapse the row to
+  `2C2P BAN` rather than guessing the original merchant. If real-world
+  data later reveals what `BAN` truncates from, sharpen then.
+- **`transfer-bugetul-de-stat` is digit-strict** — only matches
+  `BUGETUL DE STAT/<one-or-more-digits>`. A bare `BUGETUL DE STAT`
+  (no slash) falls to `beneficiary-first`. Verified by the synthetic
+  shadow fixture.
+- **Mock ASPSP** is not exercised; this is pure ING Romania live-data
+  cleanup.
+- **Postgres session timezone** is irrelevant; the change is data-only.
+- **YNAB-pushed rows are untouched.** `spendula:counterparty:recompute`
+  only writes to fetched/approved/skipped rows (per the issue's
+  out-of-scope clause).
+
+### Blast radius
+
+- Affects `ing-ro-business` and `ing-ro-personal` (shared file via
+  symlink). No other bank slug touches these rules.
+- The first-match-wins ordering of the rule array is now load-bearing
+  for one new pair: `transfer-bugetul-de-stat` must remain before
+  `beneficiary-first`. If a future edit re-sorts the array
+  alphabetically or otherwise, BUGETUL DE STAT rows would silently
+  start matching `beneficiary-first` again. The description on each
+  rule documents the dependency.
+- Twilio's prior output was `Twilio US 844-8144627`; it is now
+  `Twilio`. Any YNAB rows already pushed retain the old payee
+  (recompute does not rewrite them); future rows aggregate under the
+  new canonical name. Operator may want to manually rename in YNAB
+  if cross-period aggregation matters.
+- `RuleFixtureSelfTest` auto-discovers JSON fixtures, so the 6 new
+  positive + 2 shadow fixtures all run on every test invocation.
+- 297 tests pass. PHPStan level 8 clean. Pint clean.
+
+### Open threads
+
+- L0/L1 noise (Revolut `Bolt.eu/o/...` etc.) is explicitly out of scope;
+  deferred until concrete demand and a separate L0/L1 post-hook layer.
+- `2C2P BAN` may collapse further once the real merchant surfaces.
+- A future Spotify row from a non-`SE Stockholm` locale will not be
+  caught by `card-spotify`; revisit if/when observed.
+
+---
+
 ## Counterparty resolver — L3 falls back to `bank_transaction_code.description` (GH #31)
 
 ### What changed
