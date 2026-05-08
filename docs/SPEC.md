@@ -610,16 +610,17 @@ A SQL query grouping `bank_slug` by `counterparty_resolution_level` after a mont
         resolution level 0 · entry_ref=uxr2h
 ────────────────────────
 [a]pprove  [s]kip  [t]ransfer  [u]ndo  [d]etails  [q]uit
->
+(uppercase = decide once, don't remember) >
 ```
 
 4. Handle keypress:
    - `a` → `status = approved`, `skipped_at` cleared, move on.
    - `s` → prompt for optional reason (blank allowed), set `status = skipped`, `skip_reason`, `skipped_at`.
    - `t` → `status = transfer`, move on. The push step will prepend `[TRANSFER] ` to the memo (§7.3).
-   - `u` → undo the most recent `a`/`s`/`t` decision in this session (LIFO). Reverts the row to `status = fetched`, clears `skip_reason`/`skipped_at`, decrements the corresponding counter, and re-queues the undone row plus the currently-displayed row at the front so the operator re-decides them in order. Stack is in-memory and unbounded within a session; rows mass-approved via `--bulk-approve-trivial` are not on it.
-   - `d` → print `raw_payload` pretty-printed, then re-prompt.
-   - `q` → exit cleanly (no state change from this keypress).
+   - `A` / `S` / `T` (GH #41) → same effect on the transaction as the lowercase variant (including the skip-reason prompt for `S`), but **suppress the rule-recorder** so this decision does not generate or update a `payee_rules` row. Useful when the counterparty name is the right key for *this* row but the wrong key for a future-applying rule (e.g. ATM withdrawal whose debtor is the operator's own name; see §7.1.1). An existing rule for the same `(bank_slug, counterparty_name)` is left untouched — uppercase neither updates nor deletes it.
+   - `u` / `U` → undo the most recent `a`/`s`/`t` decision in this session (LIFO). Reverts the row to `status = fetched`, clears `skip_reason`/`skipped_at`, decrements the corresponding counter, and re-queues the undone row plus the currently-displayed row at the front so the operator re-decides them in order. Stack is in-memory and unbounded within a session; rows mass-approved via `--bulk-approve-trivial` are not on it.
+   - `d` / `D` → print `raw_payload` pretty-printed, then re-prompt.
+   - `q` / `Q` → exit cleanly (no state change from this keypress).
 
 5. At end, print summary.
 

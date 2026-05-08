@@ -1,5 +1,38 @@
 # Latest task summary
 
+## Review keystroke modifier: uppercase to decide once without remembering (GH #41)
+
+### What changed
+
+- `app/Services/Review/ReviewSession.php` main inner loop only:
+  - read key without folding case (`$rawKey = $this->readKey()`), then derive `$key = strtolower($rawKey)` for the switch and `$decideOnce = in_array($rawKey, ['A','S','T'], true)` for the recorder gate.
+  - In the `a`/`s`/`t` arms, call `recordAndCaptureRuleId()` only when `$decideOnce` is false; otherwise pass `null` for `createdRuleId`. `TransactionActions::approve|skip|markTransfer` always run.
+  - Two-line prompt: `[a]pprove  [s]kip  [t]ransfer  [u]ndo  [d]etails  [q]uit` then `(uppercase = decide once, don't remember) >`.
+  - Override sub-loop (`runOverrideLoop`), tail-prompt, show-details prompt, and rule-conflict prompt are unchanged — they keep `strtolower($this->readKey())` and have no uppercase semantics.
+- `tests/Feature/Services/Review/ReviewSessionPayeeRulesTest.php` adds five tests (now 18 tests total in the class, all green): uppercase A/S/T happy paths confirming no `payee_rules` row is created; uppercase A over an existing rule confirming action/skip_reason/updated_at are unchanged; uppercase-then-undo confirming the row reverts and `popAndRevert()` does not attempt a rule delete.
+- `docs/SPEC.md` §7.1 keystroke list extended with the uppercase A/S/T entry; the example prompt now shows the modifier hint line.
+
+### Assumptions made
+
+- The recorder dependency on `ReviewSession` remains nullable (`?PayeeRuleRecorder`); when no recorder is wired, lowercase and uppercase are observationally identical (both already skip the recorder call). No callers were updated.
+- Skip-reason behaviour for `S` is identical to `s` — the prompt fires either way; the reason is persisted on the transaction even though no rule is recorded.
+- `popAndRevert()` was already null-tolerant on `createdRuleId`, so undo of an uppercase decision is a no-op for the rules table by construction (no schema or behaviour change required there).
+- The `runOverrideLoop`, tail-prompt, and rule-conflict prompts continue to fold case via `strtolower`, so uppercase keys typed there behave as before (ignored when not in the accepted set).
+
+### Blast radius
+
+- `ReviewSession` interactive main loop only. `PayeeRuleRecorder`, `PayeeRuleEngine`, `RecordResult`, `TransactionActions`, the `payee_rules` migration, and the `:rules:list` / `:rules:delete` commands are untouched.
+- Existing `ReviewSessionTest`, `ReviewCommandTest`, and the GH #39 tests in `ReviewSessionPayeeRulesTest` continue to pass — none feed uppercase keys, so the new branch is dead code on every path they exercise.
+- Output-string change: any external consumer asserting on the exact prompt text would break. The only assertion on review-prompt strings inside this repo lives in the override-loop tests, which use a different prompt and are unaffected.
+
+### Open threads
+
+- Caps-lock typo path is not solved — an operator with caps-lock on intends `s` and gets `S`, silently suppressing rule creation. Mitigation considered (confirmation prompt on uppercase) and rejected as too noisy; the prompt-line hint is the documented contract.
+- Hint-line verbosity: one extra line per row. Tracking only via human comfort during real review sessions; if it proves noisy, a `--quiet` flag is a cheap follow-up.
+- Undo of an uppercase decision is indistinguishable from undo when a guard already declined to create a rule — irrelevant for correctness today, but if rule audit trails are added later, the `decideOnce` flag would need to be persisted alongside the decision.
+
+---
+
 ## Auto-decision rules: remember approve/skip/transfer per (bank, payee) (GH #39)
 
 ### What changed

@@ -359,6 +359,111 @@ class ReviewSessionPayeeRulesTest extends TestCase
     }
 
     /**
+     * GH #41 — uppercase modifier suppresses rule creation.
+     */
+    public function test_uppercase_a_approves_without_creating_rule(): void
+    {
+        $tx = $this->seedTransaction('JANE DOE', level: 1);
+
+        $session = new ReviewSession(
+            $this->makeCommand(),
+            new TransactionActions,
+            $this->keyReader(['A', 'q']),
+            new PayeeRuleRecorder,
+        );
+        $session->run();
+
+        $this->assertSame(TransactionStatus::Approved, $tx->refresh()->status);
+        $this->assertSame(0, PayeeRule::query()->count(), 'Uppercase A must not create a payee_rules row.');
+    }
+
+    public function test_uppercase_s_skips_with_reason_without_creating_rule(): void
+    {
+        $tx = $this->seedTransaction('JANE DOE', level: 1);
+
+        $session = new ReviewSession(
+            $this->makeCommand(['one-off cash withdrawal']),
+            new TransactionActions,
+            $this->keyReader(['S', 'q']),
+            new PayeeRuleRecorder,
+        );
+        $session->run();
+
+        $fresh = $tx->refresh();
+        $this->assertSame(TransactionStatus::Skipped, $fresh->status);
+        $this->assertSame('one-off cash withdrawal', $fresh->skip_reason, 'Skip reason still persisted on the transaction.');
+        $this->assertSame(0, PayeeRule::query()->count(), 'Uppercase S must not create a payee_rules row.');
+    }
+
+    public function test_uppercase_t_marks_transfer_without_creating_rule(): void
+    {
+        $tx = $this->seedTransaction('JANE DOE', level: 1);
+
+        $session = new ReviewSession(
+            $this->makeCommand(),
+            new TransactionActions,
+            $this->keyReader(['T', 'q']),
+            new PayeeRuleRecorder,
+        );
+        $session->run();
+
+        $this->assertSame(TransactionStatus::Transfer, $tx->refresh()->status);
+        $this->assertSame(0, PayeeRule::query()->count(), 'Uppercase T must not create a payee_rules row.');
+    }
+
+    public function test_uppercase_decision_does_not_modify_existing_rule(): void
+    {
+        // A rule already exists for (mock, FishyMerchant) saying "skip with reason 'fraud'".
+        // The operator presses uppercase A on a fresh fetched row from that payee.
+        // The transaction is approved, but the existing rule must stay untouched —
+        // future syncs continue to auto-skip FishyMerchant.
+        $existingRule = PayeeRule::query()->create([
+            'bank_slug' => 'mock',
+            'counterparty_name' => 'FishyMerchant',
+            'action' => TransactionStatus::Skipped->value,
+            'skip_reason' => 'fraud',
+        ]);
+        $originalUpdatedAt = $existingRule->updated_at;
+
+        $tx = $this->seedTransaction('FishyMerchant', level: 2);
+
+        $session = new ReviewSession(
+            $this->makeCommand(),
+            new TransactionActions,
+            $this->keyReader(['A', 'q']),
+            new PayeeRuleRecorder,
+        );
+        $session->run();
+
+        $this->assertSame(TransactionStatus::Approved, $tx->refresh()->status);
+
+        $existingRule->refresh();
+        $this->assertSame(TransactionStatus::Skipped, $existingRule->action, 'Existing rule action must remain skipped.');
+        $this->assertSame('fraud', $existingRule->skip_reason, 'Existing rule skip_reason must remain unchanged.');
+        $this->assertEquals($originalUpdatedAt?->getTimestamp(), $existingRule->updated_at?->getTimestamp(), 'Existing rule updated_at must not change.');
+        $this->assertSame(1, PayeeRule::query()->count(), 'No new rule should have been added.');
+    }
+
+    public function test_undo_after_uppercase_decision_reverts_cleanly(): void
+    {
+        $tx = $this->seedTransaction('JANE DOE', level: 1);
+
+        // Press A (approve, no rule), then u (undo). The transaction must revert
+        // to fetched, and the absent rule should remain absent — popAndRevert()
+        // must not blow up trying to delete a rule that was never created.
+        $session = new ReviewSession(
+            $this->makeCommand(),
+            new TransactionActions,
+            $this->keyReader(['A', 'u', 'q']),
+            new PayeeRuleRecorder,
+        );
+        $session->run();
+
+        $this->assertSame(TransactionStatus::Fetched, $tx->refresh()->status);
+        $this->assertSame(0, PayeeRule::query()->count(), 'No rule should ever have existed for this row.');
+    }
+
+    /**
      * @param  list<string>  $askResponses
      */
     private function makeCommand(array $askResponses = []): Command

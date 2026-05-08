@@ -167,18 +167,33 @@ class ReviewSession
 
                     $keep = true;
                     while ($keep) {
-                        $this->command->getOutput()->write('[a]pprove  [s]kip  [t]ransfer  [u]ndo  [d]etails  [q]uit > ');
-                        $key = strtolower($this->readKey());
+                        $this->command->getOutput()->writeln('[a]pprove  [s]kip  [t]ransfer  [u]ndo  [d]etails  [q]uit');
+                        $this->command->getOutput()->write("(uppercase = decide once, don't remember) > ");
+                        $rawKey = $this->readKey();
+                        $key = strtolower($rawKey);
                         $this->command->getOutput()->writeln(''); // newline after keypress echo
+
+                        // Uppercase a/s/t (GH #41): same TransactionActions call,
+                        // but suppress the rule-recorder so this decision does
+                        // NOT generate or update a payee_rules row. Useful when
+                        // the counterparty name happens to be the right key for
+                        // *this* row but the wrong key for a future-applying
+                        // rule (ATM withdrawal where debtor = operator's own
+                        // name, occasional one-off skip, etc.). Lowercase keeps
+                        // today's behaviour. Other keys (u/d/q) accept either
+                        // case via $key.
+                        $decideOnce = in_array($rawKey, ['A', 'S', 'T'], true);
 
                         switch ($key) {
                             case 'a':
                                 $this->actions->approve($transaction);
-                                $createdRuleId = $this->recordAndCaptureRuleId(
-                                    $transaction,
-                                    TransactionStatus::Approved,
-                                    null,
-                                );
+                                $createdRuleId = $decideOnce
+                                    ? null
+                                    : $this->recordAndCaptureRuleId(
+                                        $transaction,
+                                        TransactionStatus::Approved,
+                                        null,
+                                    );
                                 $undoStack[] = [
                                     'transaction' => $transaction,
                                     'statKey' => 'approved',
@@ -195,11 +210,13 @@ class ReviewSession
                                 $this->enterRawMode();
                                 $skipReason = $reason !== '' ? $reason : null;
                                 $this->actions->skip($transaction, $skipReason);
-                                $createdRuleId = $this->recordAndCaptureRuleId(
-                                    $transaction,
-                                    TransactionStatus::Skipped,
-                                    $skipReason,
-                                );
+                                $createdRuleId = $decideOnce
+                                    ? null
+                                    : $this->recordAndCaptureRuleId(
+                                        $transaction,
+                                        TransactionStatus::Skipped,
+                                        $skipReason,
+                                    );
                                 $undoStack[] = [
                                     'transaction' => $transaction,
                                     'statKey' => 'skipped',
@@ -212,11 +229,13 @@ class ReviewSession
 
                             case 't':
                                 $this->actions->markTransfer($transaction);
-                                $createdRuleId = $this->recordAndCaptureRuleId(
-                                    $transaction,
-                                    TransactionStatus::Transfer,
-                                    null,
-                                );
+                                $createdRuleId = $decideOnce
+                                    ? null
+                                    : $this->recordAndCaptureRuleId(
+                                        $transaction,
+                                        TransactionStatus::Transfer,
+                                        null,
+                                    );
                                 $undoStack[] = [
                                     'transaction' => $transaction,
                                     'statKey' => 'transferred',
