@@ -6,6 +6,7 @@ use App\Services\Counterparty\Resolver;
 use App\Services\Counterparty\Rules\Rule;
 use App\Services\Counterparty\Rules\RuleEngine;
 use App\Services\Counterparty\Rules\RuleLoader;
+use App\Services\Counterparty\Rules\RuleValidationException;
 use PHPUnit\Framework\TestCase;
 
 class ResolverTest extends TestCase
@@ -688,6 +689,244 @@ class ResolverTest extends TestCase
         ], 'revolut');
 
         $this->assertSame('Bolt.eu', $resolved->name);
+        $this->assertSame(1, $resolved->level);
+    }
+
+    // GH #42 — ATM cash withdrawal short-circuit. Universal across banks
+    // (the trigger is ISO 20022 bank_transaction_code.code = "ATM"), runs
+    // before the L0/L1 name lookup, returns the configured synthetic label
+    // at level 1 regardless of debtor/creditor names or remittance text.
+
+    public function test_atm_short_circuit_overrides_debtor_name_on_dbit(): void
+    {
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'debtor' => ['name' => 'JANE DOE'],
+            'creditor' => ['name' => null],
+            'bank_transaction_code' => ['code' => 'ATM'],
+        ], 'revolut');
+
+        $this->assertSame('ATM Cash', $resolved->name);
+        $this->assertSame(1, $resolved->level);
+    }
+
+    public function test_atm_short_circuit_fires_when_both_names_are_null(): void
+    {
+        // Confirms the branch does not depend on a name candidate existing.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'debtor' => null,
+            'creditor' => null,
+            'bank_transaction_code' => ['code' => 'ATM'],
+        ], 'revolut');
+
+        $this->assertSame('ATM Cash', $resolved->name);
+        $this->assertSame(1, $resolved->level);
+    }
+
+    public function test_atm_short_circuit_ignores_remittance_information(): void
+    {
+        // Real Revolut LT shape: 'Cash at <street>'. Location extraction is
+        // a deferred follow-up; the v1 contract is one stable label.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'debtor' => ['name' => 'JANE DOE'],
+            'bank_transaction_code' => ['code' => 'ATM'],
+            'remittance_information' => ['Cash at R Tomas Da Anunciacao,6'],
+        ], 'revolut');
+
+        $this->assertSame('ATM Cash', $resolved->name);
+        $this->assertSame(1, $resolved->level);
+    }
+
+    public function test_atm_short_circuit_is_case_insensitive_on_btc_code(): void
+    {
+        // Defensive: banks may emit lowercase 'atm' even though ISO 20022
+        // says uppercase.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'debtor' => ['name' => 'JANE DOE'],
+            'bank_transaction_code' => ['code' => 'atm'],
+        ], 'revolut');
+
+        $this->assertSame('ATM Cash', $resolved->name);
+        $this->assertSame(1, $resolved->level);
+    }
+
+    public function test_crdt_atm_falls_through_to_normal_ladder(): void
+    {
+        // Cash deposit at ATM (rare). Normal ladder: CRDT direction-correct
+        // picks debtor.name at L0.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'CRDT',
+            'debtor' => ['name' => 'Cash Deposit Source'],
+            'creditor' => ['name' => 'JANE DOE'],
+            'bank_transaction_code' => ['code' => 'ATM'],
+        ]);
+
+        $this->assertSame('Cash Deposit Source', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_dbit_with_non_atm_btc_code_falls_through(): void
+    {
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'PINGO DOCE AREEIRO'],
+            'bank_transaction_code' => ['code' => 'CARD'],
+        ]);
+
+        $this->assertSame('PINGO DOCE AREEIRO', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_dbit_with_missing_btc_falls_through(): void
+    {
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'PINGO DOCE AREEIRO'],
+        ]);
+
+        $this->assertSame('PINGO DOCE AREEIRO', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_dbit_with_btc_code_non_string_falls_through(): void
+    {
+        // Defensive: bank emits the field but with a non-string value.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'PINGO DOCE AREEIRO'],
+            'bank_transaction_code' => ['code' => 42],
+        ]);
+
+        $this->assertSame('PINGO DOCE AREEIRO', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+    }
+
+    public function test_atm_label_is_configurable_via_constructor(): void
+    {
+        $availableDir = __DIR__.'/../../../../config/counterparty-rules-available';
+        $resolver = new Resolver(
+            new RuleLoader($availableDir),
+            new RuleEngine,
+            'Cash withdrawal',
+        );
+
+        $resolved = $resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'debtor' => ['name' => 'JANE DOE'],
+            'bank_transaction_code' => ['code' => 'ATM'],
+        ], 'revolut');
+
+        $this->assertSame('Cash withdrawal', $resolved->name);
+        $this->assertSame(1, $resolved->level);
+    }
+
+    public function test_atm_short_circuit_still_validates_bank_rules(): void
+    {
+        // Codex review round 2 P2: the ATM short-circuit must NOT bypass
+        // RuleLoader validation. A broken `<bank>.json` should fail-fast
+        // on every bank-scoped resolve() call regardless of which
+        // transaction shape happens to land first.
+        $brokenDir = sys_get_temp_dir().'/spendula-broken-rules-'.uniqid();
+        mkdir($brokenDir);
+        file_put_contents(
+            $brokenDir.'/revolut.json',
+            json_encode([
+                'name' => 'revolut',
+                'rules' => [[
+                    'name' => 'broken',
+                    'description' => 'unparseable regex',
+                    'pattern' => '/[broken/',
+                    'replacement' => 'x',
+                    'tests' => [['in' => 'a', 'out' => 'b']],
+                ]],
+            ]),
+        );
+
+        $resolver = new Resolver(
+            new RuleLoader($brokenDir),
+            new RuleEngine,
+        );
+
+        $this->expectException(RuleValidationException::class);
+
+        try {
+            $resolver->resolve([
+                'credit_debit_indicator' => 'DBIT',
+                'bank_transaction_code' => ['code' => 'ATM'],
+            ], 'revolut');
+        } finally {
+            @unlink($brokenDir.'/revolut.json');
+            @rmdir($brokenDir);
+        }
+    }
+
+    public function test_atm_label_falls_back_to_default_when_blank(): void
+    {
+        // Codex review round 2 P1: a `cp .env.example .env` flow leaves
+        // SPENDULA_ATM_CASH_LABEL= as an empty string. The constructor
+        // must treat that as "use the default" rather than honouring '',
+        // which would otherwise make every ATM withdrawal resolve to a
+        // blank counterparty_name. Whitespace-only is treated the same way.
+        $availableDir = __DIR__.'/../../../../config/counterparty-rules-available';
+
+        foreach (['', '   ', "\t\n"] as $blankLabel) {
+            $resolver = new Resolver(
+                new RuleLoader($availableDir),
+                new RuleEngine,
+                $blankLabel,
+            );
+
+            $resolved = $resolver->resolve([
+                'credit_debit_indicator' => 'DBIT',
+                'bank_transaction_code' => ['code' => 'ATM'],
+            ], 'revolut');
+
+            $this->assertSame('ATM Cash', $resolved->name, 'Blank label must fall back to the documented default.');
+            $this->assertSame(1, $resolved->level);
+        }
+    }
+
+    public function test_atm_label_strips_surrounding_whitespace(): void
+    {
+        // Copilot review PR #44: a label like `" Cash withdrawal "` would
+        // previously have leading/trailing whitespace stored verbatim into
+        // counterparty_name, polluting dedup_hash inputs and payee-rule
+        // keys. Constructor must trim before storing.
+        $availableDir = __DIR__.'/../../../../config/counterparty-rules-available';
+        $resolver = new Resolver(
+            new RuleLoader($availableDir),
+            new RuleEngine,
+            '  Cash withdrawal  ',
+        );
+
+        $resolved = $resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'bank_transaction_code' => ['code' => 'ATM'],
+        ], 'revolut');
+
+        $this->assertSame('Cash withdrawal', $resolved->name);
+        $this->assertSame(1, $resolved->level);
+    }
+
+    public function test_atm_label_is_truncated_to_64_chars(): void
+    {
+        $availableDir = __DIR__.'/../../../../config/counterparty-rules-available';
+        $longLabel = str_repeat('Z', 100);
+        $resolver = new Resolver(
+            new RuleLoader($availableDir),
+            new RuleEngine,
+            $longLabel,
+        );
+
+        $resolved = $resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'bank_transaction_code' => ['code' => 'ATM'],
+        ], 'revolut');
+
+        $this->assertSame(64, mb_strlen($resolved->name));
         $this->assertSame(1, $resolved->level);
     }
 }

@@ -381,6 +381,25 @@ class CounterpartyRulesAddCommand extends Command
             ? strtoupper($transaction['credit_debit_indicator'])
             : '';
 
+        // GH #42 — mirror Resolver::resolve()'s ATM short-circuit so the
+        // impact preview reflects what a real recompute will store. Without
+        // this, `--from-transaction=<id>` for a DBIT+ATM row would preview
+        // remittance-rule impact against L1/L2 even though the resolver
+        // never reaches those levels for ATM withdrawals (codex review
+        // round 2 P2).
+        if ($cdi === 'DBIT' && $this->bankTransactionCode($transaction) === 'ATM') {
+            // Trim before truncation so stray whitespace in the configured
+            // label does not become part of the previewed payee — must
+            // mirror Resolver::__construct() exactly so `--from-transaction`
+            // previews stay byte-identical to what recompute will store
+            // (Copilot review PR #44).
+            $rawLabel = (string) config('spendula.resolver.atm_cash_label', 'ATM Cash');
+            $trimmed = trim($rawLabel);
+            $label = $trimmed !== '' ? $trimmed : 'ATM Cash';
+
+            return mb_substr($label, 0, 64);
+        }
+
         $creditor = $this->extractName($transaction, 'creditor');
         $debtor = $this->extractName($transaction, 'debtor');
 
@@ -478,5 +497,26 @@ class CounterpartyRulesAddCommand extends Command
         }
 
         return null;
+    }
+
+    /**
+     * Mirror of Resolver::bankTransactionCode() used by the GH #42 ATM
+     * short-circuit in resolveWithRules(). Returns the upper-cased code
+     * or null when missing / non-string / non-array parent.
+     *
+     * @param  array<string, mixed>  $transaction
+     */
+    private function bankTransactionCode(array $transaction): ?string
+    {
+        $node = $transaction['bank_transaction_code'] ?? null;
+        if (! is_array($node)) {
+            return null;
+        }
+        $code = $node['code'] ?? null;
+        if (! is_string($code)) {
+            return null;
+        }
+
+        return strtoupper($code);
     }
 }

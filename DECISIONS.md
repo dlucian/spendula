@@ -54,3 +54,34 @@ Architectural choices, alternatives considered, and the constraints that drove t
 - **Easier:** auditing and pruning live in `spendula:rules:list` / `:delete` without an HTTP surface.
 - **Harder:** two payees that *should* share a rule but render with different `counterparty_name` values (case drift, post-rule cleanup) won't auto-apply across that boundary. Fix by tightening the upstream `name_rules` rather than relaxing this engine.
 - **Harder:** the denylist sidesteps the ATM/self-transfer ambiguity; the operator still re-decides every transaction for those payees. The proper fix (rule predicate over remittance) is queued as a separate follow-up.
+
+
+---
+
+## 2026-05-08 — ATM cash withdrawal short-circuit in the resolver (GH #42)
+
+**Decision.** `Resolver::resolve()` gains a structural short-circuit at the top: when `credit_debit_indicator = "DBIT"` AND `bank_transaction_code.code = "ATM"` (case-insensitive), return a configurable synthetic label (`config('spendula.resolver.atm_cash_label')`, default `"ATM Cash"`, env override `SPENDULA_ATM_CASH_LABEL`) at **level 1**. The label is wired into `Resolver` via constructor injection (matching the `EnableBankingClient` pattern) and bound as a singleton in `AppServiceProvider`. CRDT, non-ATM transaction codes, and missing/non-string codes all fall through to the existing L0/L1/L2/L3/L4 ladder unchanged.
+
+**Alternatives considered.**
+
+1. *Promote `bank_transaction_code` to a first-class match field in the rule schema* (the issue's option b). The "proper general fix" called out in the GH #33 entry above. Rejected for this issue because it requires a Rule-schema extension (`when` / structural-match predicate), loader/validator/fixture-runner support, plus a one-shot shape decision (path strings vs nested object) — all of which is bigger than the issue's scope and forces a design call that's hard to revisit. **Not blocked by this PR**: a future case that genuinely needs name + remittance simultaneous predicates can still ship the schema extension; the operator runs `spendula:counterparty:recompute` and the new rule supersedes the resolver branch.
+2. *Hard-code the label in PHP without a config knob.* Rejected: matches the GH #33 alternative-2 rejection in spirit (operator-facing strings should be reachable without a code change, especially for non-English deployments).
+3. *Per-bank `atm_cash_label` keyed by `bank_slug`.* Deferred: no second bank has shown divergent ATM semantics yet, and the config can be widened from `string` to `string|array<string,string>` later without a migration. Backwards-compatible.
+4. *Add a new resolution level (e.g. L0.5 or L5) for "structurally-derived" payees.* Rejected: changes the operator-facing review display, breaks the `counterparty_resolution_level >= 4` guard in the GH #39 `PayeeRuleRecorder`, and adds a level number that nothing else uses. L1 is acceptable — structurally-derived counterparty is closer in confidence to L1 (direction-inverted name match) than to L2.
+5. *Extract the ATM location from `Cash at <street>` remittance into the synthetic payee.* Deferred per the issue. The single stable label is the v1 contract; if location-aware aggregation later becomes desirable the regex (`^Cash at (.+)$`) is a small follow-up.
+
+**Constraints that drove the choice.**
+
+- The trigger field is ISO 20022 `bank_transaction_code` — universal, not bank-specific text. A built-in resolver branch keyed on a standard ISO field is not "polluting the resolver with bank-specific knowledge" in the sense the GH #33 entry rejected (that was about Bolt-style text patterns).
+- The desired output is a single fixed string. Using the regex+replacement rule engine for a fixed-string output would be overkill.
+- Rule-schema extension is a larger design conversation (see alternative 1) that this issue should not force.
+- The resolver had no prior `config()` call — adding one in a service that's also constructed manually in unit tests would couple unit tests to Laravel bootstrap. Constructor injection avoids that and matches the existing pattern for `EnableBankingClient`'s base URL.
+
+**Consequences.**
+
+- **Easier:** every ATM withdrawal aggregates under one stable YNAB payee (`"ATM Cash"`), and the operator can opt to auto-skip them via the GH #39 pipeline (the synthetic label is a stable `(bank_slug, counterparty_name)` key — no operator-name denylist needed for the ATM case anymore).
+- **Easier:** backfill is the existing `spendula:counterparty:recompute` artisan command. No migration, no special data path.
+- **Easier:** `bulkApproveTrivial` (`counterparty_resolution_level <= 1` AND base currency) now also auto-approves ATM withdrawals consistently.
+- **Harder:** future structural-field overrides (`FEES`, `INT`, etc.) will either accumulate as universal resolver branches or eventually motivate the schema extension. If the count of universal branches grows beyond ~3–4, that's the signal to revisit alternative 1.
+- **Harder:** the GH #39 `operator_names` denylist is still useful for non-ATM self-transfer cases (the operator's own name appearing as a counterparty for an in-bank transfer), but the *primary* motivating case (ATM withdrawal) is now structurally classified. The denylist is no longer load-bearing for ATM correctness.
+- **Slightly worse:** `Resolver` is now wired by `AppServiceProvider` rather than being container-auto-resolvable from its bare constructor. Tests can still construct it directly with an explicit label argument, so the test surface is unchanged.

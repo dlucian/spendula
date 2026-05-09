@@ -1,5 +1,42 @@
 # Latest task summary
 
+## ATM cash withdrawal short-circuit in the resolver (GH #42)
+
+### What changed
+
+- `app/Services/Counterparty/Resolver.php` — new structural short-circuit at the top of `resolve()`. When `credit_debit_indicator = "DBIT"` AND `bank_transaction_code.code = "ATM"` (case-insensitive, defensive against missing/non-string code values), return `ResolvedCounterparty(mb_substr($atmCashLabel, 0, 64), 1)` before the L0/L1 name lookup runs. New private helper `bankTransactionCode()` reads the upper-cased code or returns null. Class docblock extended to document the pre-L0 branch.
+- `Resolver` constructor gains a third parameter `string $atmCashLabel = 'ATM Cash'` (default for direct test instantiation).
+- `app/Providers/AppServiceProvider.php` — registers `Resolver` as a singleton, threading `(string) config('spendula.resolver.atm_cash_label', 'ATM Cash')` into the constructor. Pattern matches the existing `EnableBankingClient` binding.
+- `config/spendula.php` — adds `resolver.atm_cash_label` reading `env('SPENDULA_ATM_CASH_LABEL') ?: 'ATM Cash'` so a `cp .env.example .env` flow that leaves the var empty still falls back to the default instead of resolving to `''`.
+- `.env.example` — documents the new env var.
+- `tests/Unit/Services/Counterparty/ResolverTest.php` — 13 new ATM-related tests (61 total `test_*` methods in class, all green): DBIT+ATM with debtor name set; DBIT+ATM with both names null; DBIT+ATM with non-empty remittance; DBIT+`code: 'atm'` (case-insensitive); CRDT+ATM falls through; DBIT+CARD falls through; missing `bank_transaction_code` falls through; non-string `code` value falls through; constructor-injected label override; ATM short-circuit still validates bank rules (broken rule file fails fast); blank label falls back to default; whitespace-padded label is trimmed before storage (Copilot review PR #44); 64-char truncation on a long label.
+- `docs/SPEC.md` §6.8 — counterparty ladder gains a leading "ATM short-circuit" bullet.
+- `DECISIONS.md` — appended a 2026-05-08 entry covering the choice of universal resolver branch over rule-schema extension, level 1 over a new level number, deferred location extraction and per-bank label override.
+
+### Assumptions made
+
+- ISO 20022 `bank_transaction_code.code = "ATM"` reliably marks DBIT cash withdrawals at the banks Spendula touches today (Revolut LT confirmed; Mock ASPSP and other banks unverified — they fall through harmlessly if they emit a non-ATM code).
+- A single global synthetic label is fine for v1. If a second bank emits divergent ATM semantics, the config key widens from `string` to `string|array<bank_slug,string>` without a migration.
+- Backfill is the operator running `spendula:counterparty:recompute` after deploy. The command was already in production for tuning the resolver; no command-level changes needed.
+- `Resolver` is now wired through `AppServiceProvider` rather than being container-auto-resolvable. Two existing call sites (`MatchUpdateOrInsert`, `CounterpartyRecomputeCommand::handle`) take `Resolver` via type-hinted DI and continue to work via the singleton binding.
+- Postgres session timezone was UTC during the test run; tests are pure unit-level and do not touch the DB.
+
+### Blast radius
+
+- `Resolver::resolve()` only — no other counterparty / sync / push / review code paths change.
+- All ATM rows currently in `transactions` re-resolve to the synthetic label after `spendula:counterparty:recompute`. The `dedup_hash` for those rows depends on `normalized_counterparty`, so the hash will change — but the dedup invariant still holds because `normalized_counterparty` is recomputed from the current `counterparty_name` on the next match-or-insert pass, and the existing rows are matched by stored `entry_reference` + `bank_account_id` + `booking_date` + `amount` (per `MatchUpdateOrInsert`), not by `dedup_hash`. Hash drift on already-stored rows is inert.
+- GH #39 `payee_rules` table: the synthetic label `"ATM Cash"` becomes a stable rule key. Operators who have already approved/skipped a Spotify-shaped rule for `"JANE DOE"` will have that rule become stale (the row no longer resolves to that name). They can `spendula:rules:list` and `:delete` the orphan if it bothers them; otherwise it sits inert.
+- `ReviewSession`, `TransactionActions`, `PayeeRuleEngine`, `PayeeRuleRecorder`: untouched.
+
+### Open threads
+
+- Rule-schema extension (the issue's option b) — still desirable for cases that need name + remittance simultaneous predicates (e.g. some bank's "ATM" code is sometimes a self-transfer, distinguishable only by remittance shape). Tracked implicitly via DECISIONS GH #33's open thread; will become urgent if a real case appears.
+- Per-bank `atm_cash_label`. Deferred until a second bank shows divergent ATM behaviour.
+- Location extraction from `Cash at <street>` remittance. Deferred; the single stable label is the v1 contract.
+- CRDT cash-deposit-at-ATM is currently *not* short-circuited (falls through to normal ladder). If real-world data shows operators want a `"ATM Cash Deposit"` synthetic payee for that direction, widen the branch symmetrically.
+
+---
+
 ## Review keystroke modifier: uppercase to decide once without remembering (GH #41)
 
 ### What changed

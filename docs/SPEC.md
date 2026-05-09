@@ -573,6 +573,7 @@ The uniqueness constraint is `UNIQUE(bank_account_id, dedup_hash, occurrence)`.
 
 For each transaction, try in order and record which level succeeded in `counterparty_resolution_level`:
 
+- **ATM short-circuit** (GH #42) — when `credit_debit_indicator = "DBIT"` AND `bank_transaction_code.code = "ATM"` (ISO 20022 cash-withdrawal code, case-insensitive), skip every name lookup and resolve to the configured synthetic label (`config('spendula.resolver.atm_cash_label')`, default `"ATM Cash"`, env override `SPENDULA_ATM_CASH_LABEL`) at **level 1**. Universal across banks. Rationale: SEPA-correctly the cardholder is the debtor on a cash withdrawal — useless as a YNAB payee, fragments every withdrawal under the operator's own legal name, and collides with self-transfer rows. The remittance text (e.g. Revolut's `"Cash at <street>"`) is intentionally ignored at this stage; location-aware payees are a deferred follow-up.
 - **Level 0** — direction-correct field:
   - `CRDT` (money in) → `debtor.name` (the other party is the debtor)
   - `DBIT` (money out) → `creditor.name` (the other party is the creditor)

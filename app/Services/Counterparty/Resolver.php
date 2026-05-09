@@ -9,6 +9,9 @@ use App\Services\Counterparty\Rules\RuleOutcome;
 /**
  * SPEC §6.8 counterparty ladder.
  *
+ * - **ATM short-circuit** (GH #42): DBIT + `bank_transaction_code.code = "ATM"`
+ *       returns the configured synthetic label at level 1 before any
+ *       L0/L1 name lookup. Universal; runs for every bank.
  * - L0: direction-correct debtor/creditor name (universal), passed
  *       through the bank's `name_rules` if any matched
  * - L1: direction-inverted debtor/creditor name (Mock ASPSP, some RO
@@ -31,10 +34,25 @@ use App\Services\Counterparty\Rules\RuleOutcome;
  */
 class Resolver
 {
+    private readonly string $atmCashLabel;
+
     public function __construct(
         private readonly RuleLoader $ruleLoader,
         private readonly RuleEngine $ruleEngine,
-    ) {}
+        string $atmCashLabel = 'ATM Cash',
+    ) {
+        // Defensive: an empty / whitespace-only label would land every ATM
+        // withdrawal at counterparty_name = '' (or whitespace), which the
+        // dedup hasher then normalises to ''. Treat blank as "use the
+        // default" rather than honouring the empty value (codex review
+        // round 2 — covers callers that bypass the config-side `?:`
+        // fallback by passing the label directly). Trim before storing so
+        // accidental whitespace in SPENDULA_ATM_CASH_LABEL (e.g.
+        // `" Cash withdrawal "`) does not leak into counterparty_name and
+        // perturb dedup / payee-rule matching (Copilot review PR #44).
+        $trimmed = trim($atmCashLabel);
+        $this->atmCashLabel = $trimmed !== '' ? $trimmed : 'ATM Cash';
+    }
 
     /**
      * Resolve a counterparty name + level for an Enable Banking transaction.
@@ -78,14 +96,32 @@ class Resolver
             ? strtoupper($transaction['credit_debit_indicator'])
             : '';
 
-        $creditor = $this->extractName($transaction, 'creditor');
-        $debtor = $this->extractName($transaction, 'debtor');
-
         // Name-rule list is loaded once per resolve() call: L0 and L1
         // share it, and at most one of them produces a return. With null
         // bank slug we skip rule consultation entirely so callers with
         // unknown bank get current pre-name-rule behaviour.
+        //
+        // Loaded BEFORE the GH #42 ATM short-circuit so that a malformed
+        // rule file still throws RuleValidationException on every
+        // bank-scoped call — the resolver's documented fail-fast behaviour
+        // must not depend on which transaction shape happens to be
+        // resolved first (codex review round 2 P2).
         $nameRules = $bankSlug !== null ? $this->ruleLoader->nameRulesForBank($bankSlug) : [];
+
+        // GH #42 — ATM short-circuit. ISO 20022 `bank_transaction_code.code = "ATM"`
+        // marks a cash-withdrawal event. On DBIT the SEPA-correct counterparty is
+        // the debtor (cardholder = operator's own name), which is useless as a
+        // YNAB payee — every withdrawal would resolve under the operator's legal
+        // name and collide with self-transfers. Replace it with a configurable
+        // synthetic label at level 1 before any name lookup runs. CRDT (cash
+        // deposit at ATM) and non-ATM transaction codes fall through to the
+        // normal ladder.
+        if ($cdi === 'DBIT' && $this->bankTransactionCode($transaction) === 'ATM') {
+            return new ResolvedCounterparty(mb_substr($this->atmCashLabel, 0, 64), 1);
+        }
+
+        $creditor = $this->extractName($transaction, 'creditor');
+        $debtor = $this->extractName($transaction, 'debtor');
 
         // Level 0: direction-correct.
         $directCorrect = match ($cdi) {
@@ -199,5 +235,27 @@ class Resolver
         }
 
         return null;
+    }
+
+    /**
+     * Read the upper-cased `bank_transaction_code.code` from the raw
+     * transaction envelope, or null when the field is missing, the
+     * parent is not an array, or the value is not a string. Used by
+     * the ATM short-circuit (GH #42).
+     *
+     * @param  array<string, mixed>  $transaction
+     */
+    private function bankTransactionCode(array $transaction): ?string
+    {
+        $node = $transaction['bank_transaction_code'] ?? null;
+        if (! is_array($node)) {
+            return null;
+        }
+        $code = $node['code'] ?? null;
+        if (! is_string($code)) {
+            return null;
+        }
+
+        return strtoupper($code);
     }
 }

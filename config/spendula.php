@@ -25,6 +25,21 @@ return [
         'base_url' => env('SPENDULA_EXCHANGE_RATE_BASE_URL', 'https://api.frankfurter.dev/v1'),
     ],
 
+    // GH #42 — synthetic counterparty label for DBIT cash withdrawals
+    // identified by ISO 20022 `bank_transaction_code.code = "ATM"`.
+    // The Resolver short-circuits to this label at level 1 before the
+    // L0/L1 name-based branches; for the operator this collapses every
+    // ATM withdrawal under one stable YNAB payee instead of fragmenting
+    // them under the cardholder's own name (the SEPA-correct debtor).
+    'resolver' => [
+        // `?:` over `env(..., 'ATM Cash')` so a blank `SPENDULA_ATM_CASH_LABEL=`
+        // line in `.env` (which Laravel parses as an empty string, NOT a
+        // missing key) still falls back to the default — otherwise every
+        // ATM withdrawal would resolve to an empty counterparty after a
+        // plain `cp .env.example .env` (codex review round 2).
+        'atm_cash_label' => env('SPENDULA_ATM_CASH_LABEL') ?: 'ATM Cash',
+    ],
+
     // GH #39 — auto-decision rule guards. Names that resolve to one of
     // these are NEVER converted into a payee_rules entry on first
     // decision; the operator can still decide each transaction manually,
