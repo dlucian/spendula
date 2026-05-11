@@ -117,10 +117,19 @@ Reload Caddy (`sudo systemctl reload caddy` or `caddy reload --config /etc/caddy
 cd /srv/spendula
 git pull
 docker compose -f docker-compose.prod.yml build app
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d --force-recreate --no-deps app
 docker compose -f docker-compose.prod.yml exec app php artisan migrate --force
 docker compose -f docker-compose.prod.yml exec app php artisan config:cache
 docker compose -f docker-compose.prod.yml exec app php artisan route:cache
+```
+
+**`--force-recreate --no-deps app` is load-bearing.** A bare `up -d` after a `build app` sometimes leaves the previous container in place if compose decides the image hash didn't change in a way it cares about — the result is a freshly-built image that is never actually scheduled, and the running app keeps serving stale code. Real bug hit 2026-05-11: a counterparty-rule fix had been merged and built, but `up -d` skipped the recreate, so the bug kept reproducing in prod. `--force-recreate --no-deps app` recreates the app container unconditionally; `--no-deps` keeps `db` and `web` untouched (no point bouncing them on an app-only change).
+
+Sanity check after the deploy if you suspect staleness:
+
+```bash
+docker compose -f docker-compose.prod.yml exec app ls config/counterparty-rules-enabled/
+# or any other path / file you know your change touched.
 ```
 
 No rolling deploys, no zero-downtime requirements — single-user tool, brief downtime during migration is fine.
