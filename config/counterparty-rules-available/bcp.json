@@ -85,6 +85,16 @@
       ]
     },
     {
+      "name": "compra-glovo",
+      "description": "GLOVO delivery via COMPRA — bank glues a per-order date tag (DDMON, e.g. '02APR') and an alphanumeric order ref ('LIFLGYHWL') between the 'GLOVO' merchant and the location. Drop both so all Glovo orders aggregate to one payee per locale.",
+      "pattern": "/^COMPRA\\s+\\d{3,5}\\s+(GLOVO)\\s+\\d{1,2}[A-Z]{3}\\s+[A-Z0-9]+\\s+(.+?)(?:\\s+CONTACTLESS)?\\s*$/i",
+      "replacement": "$1 $2",
+      "tests": [
+        {"in": "COMPRA 5962 GLOVO 02APR LIFLGYHWL LISBOA PT", "out": "GLOVO LISBOA PT"},
+        {"in": "COMPRA 5962 GLOVO 03MAY LIAZXWU8Y LISBOA PT", "out": "GLOVO LISBOA PT"}
+      ]
+    },
+    {
       "name": "compra-card-purchase",
       "description": "BCP card purchase: 'COMPRA NNNN <merchant> [CONTACTLESS]'. NNNN is the last-4 of the card or a category code (5962, 9800).",
       "pattern": "/^COMPRA\\s+\\d{3,5}\\s+(.+?)(?:\\s+CONTACTLESS)?\\s*$/i",

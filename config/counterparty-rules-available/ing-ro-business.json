@@ -35,13 +35,25 @@
     },
     {
       "name": "card-amazon",
-      "description": "WWW.AMAZON card transaction — per-order reference glued to the merchant tag with a '*' separator (WWW.AMAZON*NW18Y2WK4). Drop the ref so all Amazon orders aggregate.",
-      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(WWW\\.AMAZON)\\*[A-Z0-9]+\\s+(.+?)(?:,\\s*Authorization date,.*)?$/iu",
+      "description": "WWW.AMAZON card transaction — per-order reference glued to the merchant tag with a '*' separator. The separator may be tight ('WWW.AMAZON*NW18Y2WK4') or have a space after the asterisk ('WWW.AMAZON* N67YH1OK4') — both shapes appear on the EUR business account. Trailing locale also varies: 'LU  amzn.com/bill' for most orders, 'LU  LUXEMBOURG' for direct AWS-routed ones. Drop the ref so all Amazon orders aggregate; keep the locale so distinct booking domains stay separable.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*(WWW\\.AMAZON)\\*\\s*[A-Z0-9]+\\s+(.+?)(?:,\\s*Authorization date,.*)?$/iu",
       "replacement": "$1 $2",
       "post": ["trim", "collapse"],
       "tests": [
         {"in": "Card number, **** 0429, Transaction at, WWW.AMAZON*NW18Y2WK4  LU  amzn.com/bill, Authorization date, 19-04-2026, Authorization number, 033623", "out": "WWW.AMAZON LU amzn.com/bill"},
-        {"in": "Card number, **** 0429, Transaction at, WWW.AMAZON*NW5XJ51B4  LU  amzn.com/bill, Authorization date, 15-04-2026, Authorization number, 887007", "out": "WWW.AMAZON LU amzn.com/bill"}
+        {"in": "Card number, **** 0429, Transaction at, WWW.AMAZON*NW5XJ51B4  LU  amzn.com/bill, Authorization date, 15-04-2026, Authorization number, 887007", "out": "WWW.AMAZON LU amzn.com/bill"},
+        {"in": "Card number, **** 0429, Transaction at, WWW.AMAZON* N67YH1OK4  LU  LUXEMBOURG, Authorization date, 02-05-2026, Authorization number, 088527", "out": "WWW.AMAZON LU LUXEMBOURG"},
+        {"in": "Card number, **** 0429, Transaction at, WWW.AMAZON* N63OJ7OY4  LU  LUXEMBOURG, Authorization date, 02-05-2026, Authorization number, 033364", "out": "WWW.AMAZON LU LUXEMBOURG"}
+      ]
+    },
+    {
+      "name": "card-godaddy",
+      "description": "GoDaddy card transaction routed through the DNH payment processor: 'DNH*GODADDY#<order-ref>  US  <support-phone>'. The DNH* prefix is the processor tag, '#NNNN' is the per-order reference, and the trailing 'US  480-5058855' is GoDaddy's customer-support number repeated on every row. Strip all three; emit 'GODADDY US' so every domain renewal aggregates to one payee.",
+      "pattern": "/^Card number,\\s*\\*+\\s*\\d+,\\s*Transaction at,\\s*DNH\\*GODADDY#\\d+\\s+US\\s+\\d{3}-\\d{7}(?:,\\s*Authorization date,.*)?$/iu",
+      "replacement": "GODADDY US",
+      "post": ["trim"],
+      "tests": [
+        {"in": "Card number, **** 0429, Transaction at, DNH*GODADDY#4079903864  US  480-5058855, Authorization date, 04-05-2026, Authorization number, 778783, Amount, 22,20  USD, Settlement amount, 18,95 EUR", "out": "GODADDY US"}
       ]
     },
     {
