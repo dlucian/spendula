@@ -1,5 +1,38 @@
 # Latest task summary
 
+## Sync PDNG-filter field-name fix (GH #46)
+
+### What changed
+
+- `app/Services/Sync/SyncRunner.php:344-352` — the non-BOOK pre-parse filter now reads `$ebTransaction['status']` (EB's actual field name) instead of `$ebTransaction['transaction_status']`. PDNG / INFO / OTHR / FUTR rows now correctly skip via the existing `continue;` branch before reaching `MatchUpdateOrInsert::apply()`. Extended the surrounding comment to spell out the EB-field vs DB-column distinction so the next reader doesn't repeat the mistake.
+- `app/Services/Sync/MatchUpdateOrInsert.php:172-181` — same field-name change for the derivation that persists into the DB column `transactions.transaction_status`. The DB column keeps its legacy name (kept to avoid a rippling migration). Default still falls back to `'BOOK'` for banks that omit the field entirely on booked rows.
+- `tests/Feature/Services/Sync/MatchUpdateOrInsertTest.php:63` (sampleTransaction helper) and `tests/Feature/Services/Sync/SyncRunnerTest.php:328` (eurTransaction helper) — EB-payload-shape fixtures updated to `status`. The other ~10 `transaction_status` hits across tests/ are `Transaction::query()->create([...])` DB-column inserts and stay unchanged (plan estimated 3 EB-shape sites; actual is 2 — the `MatchUpdateOrInsertTest.php:152` site is a DB insert, not an EB shape).
+- `tests/Feature/Services/Sync/SyncRunnerTest.php` — new regression `test_non_book_rows_are_filtered_pre_parse_and_do_not_abort_sync`: a single EB page mixing `status=PDNG` (no booking_date, mimicking ING's card-hold shape), `status=INFO`, missing-`status`, empty-string `status`, and `status=BOOK` rows. Asserts only the BOOK row plus the rows with missing or empty `status` land (empty/missing values persisting as BOOK; entry_refs verified by name), `sync_runs.error_count = 0`, `bank_account_sync_state.consecutive_failure_count = 0`, `last_successful_sync_at` populated, `last_continuation_key` cleared.
+- `docs/SPEC.md` §4 (transactions schema) — added a one-clause note on the `transaction_status` row clarifying that it mirrors EB's `status` payload field. §6.2 — corrected the field name in the §6.1 step list, expanded the `{BOOK, PDNG, INFO, …}` set to include OTHR/FUTR, and added a blockquote note pinning the EB-field vs DB-column distinction explicitly.
+- `app/Services/Sync/DECISIONS.md` — new 2026-05-11 entry documenting why the bug stayed dormant (BCP/Revolut don't surface PDNG in their AIS feed), the discovery context (prod rollout to example-deployment — ING Romania business EUR account parse_error every sync run, 0 transactions ingested), the decision to keep the DB column named `transaction_status` rather than rename, and the choice of in-place filter fix rather than persist-then-filter (the existing comment at SyncRunner:354-361 explains the constraint: EB does not allow continuation-key replay).
+
+### Assumptions made
+
+- EB's payload schema for the booked/pending status is `status`, consistent across BCP, Revolut LT, and ING Romania. Verified live against ING Romania business EUR account via the `EnableBanking\Client::accountTransactions()` tinker probe; verified stored against BCP (6 sample rows, all `raw_payload->>'status' = 'BOOK'`, no `transaction_status` key present).
+- All currently-stored prod rows have `transaction_status = 'BOOK'` (set by the parser's pre-fix default fallback). No backfill is needed: code in `app/` doesn't branch on `transaction_status` for stored rows (verified via grep), and any future feature that needs the genuine EB value can read `raw_payload->>'status'`.
+- Pre-cutoff rows that get `status = Skipped` during sync are unaffected by this change — the filter runs after the BOOK/non-BOOK gate.
+- Postgres session timezone was UTC during the test run (config baseline; not specific to this PR).
+
+### Blast radius
+
+- `app/Services/Sync/SyncRunner::syncAccount()` and `app/Services/Sync/MatchUpdateOrInsert::parseIncoming()` — the only two production reads of the field. Both call sites covered by the existing test suite plus the new regression.
+- Stored data: zero change to existing rows. The DB column `transactions.transaction_status` keeps its name and values.
+- Behavioral surface: BOOK rows ingest unchanged; rows that were silently mis-ingested as BOOK because of the broken filter (none observed; banks emit BOOK for booked rows) would now route correctly; non-BOOK rows that previously aborted sync (only observed for ING Romania business EUR account on prod) now filter cleanly.
+- Downstream: no impact on `:review`, `:push`, `:counterparty:recompute`, `:tracking:snapshot`, `:status`, or `:rules:list/add/delete` — none read `raw_payload->>'transaction_status'` or branch on the column for routing.
+
+### Open threads
+
+- The DB column `transactions.transaction_status` is now permanently misnamed relative to EB's schema. Rename is a follow-up if it ever becomes worth the migration cost; for now the SPEC §4 note plus inline docblocks should keep the next reader out of trouble.
+- PDNG → BOOK recovery: when a previously-filtered PDNG card hold transitions to BOOK in a later EB poll, it re-appears within the 7-day overlap window (SPEC §6.2) with `booking_date` populated and gets ingested via the normal match-update-or-insert path. No special-case code in this PR.
+- Stored rows on prod's ING Romania business EUR account account (currently 0) will land on the next `:sync` post-deploy. Operator demo block in the GH #46 issue body covers the verification path.
+
+---
+
 ## ATM cash withdrawal short-circuit in the resolver (GH #42)
 
 ### What changed

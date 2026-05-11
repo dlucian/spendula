@@ -281,7 +281,7 @@ The core table. State machine:
 | `dedup_hash` | string, indexed | see §6.7 |
 | `entry_reference` | string, nullable, indexed | Enable Banking's `entry_reference` when present |
 | `status` | enum | `fetched`, `approved`, `skipped`, `transfer`, `pushed`, `tracking` |
-| `transaction_status` | enum | `BOOK` (v1 imports only BOOK; see §6.2) |
+| `transaction_status` | enum | `BOOK` (v1 imports only BOOK; see §6.2). Mirrors EB's `status` payload field — the DB column kept its legacy name to avoid a rippling migration. |
 | `booking_date` | date | |
 | `value_date` | date, nullable | |
 | `amount_milliunits` | bigint, signed | native currency, milliunits |
@@ -459,7 +459,7 @@ When Enable Banking returns transactions with embedded exchange rate data (`curr
 3. For each connection, for each `bank_account_sessions` row where the account is `active`:
    - Determine the fetch date range (§6.2).
    - Fetch transactions page by page via `continuation_key` (§6.6).
-   - Filter to `transaction_status = BOOK` (§6.2).
+   - Filter to `status = BOOK` (§6.2; stored under DB column `transaction_status`).
    - For each transaction, run match-update-or-insert (§6.3).
 4. Write a `sync_runs` row. Release the lock.
 
@@ -483,7 +483,9 @@ When Enable Banking returns transactions with embedded exchange rate data (`curr
 
 **Status filtering:**
 
-Enable Banking returns transactions with `transaction_status` in `{BOOK, PDNG, INFO, …}`. v1 processes **only `BOOK`** (booked/accounted transactions). Pending transactions are unstable: they can disappear, change amount, or be replaced by a different `BOOK` row. Handling pending is a v2 concern.
+Enable Banking returns transactions with a `status` field in `{BOOK, PDNG, INFO, OTHR, FUTR, …}`. v1 processes **only `BOOK`** (booked/accounted transactions). Pending transactions are unstable: they can disappear, change amount, or be replaced by a different `BOOK` row. Handling pending is a v2 concern.
+
+> **Field-name note.** EB calls this field `status` in the payload. Spendula persists it under the DB column `transactions.transaction_status` (legacy name, retained to avoid a rippling migration; see GH #46). All EB-payload reads use the key `status`; only the DB column keeps the longer name.
 
 ### 6.3 Match-update-or-insert
 

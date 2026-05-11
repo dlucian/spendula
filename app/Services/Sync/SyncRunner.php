@@ -336,13 +336,17 @@ class SyncRunner
 
                     return false;
                 }
-                // Treat missing/empty transaction_status as BOOK to mirror
-                // MatchUpdateOrInsert::parseIncoming's default. Some banks omit
-                // the field for booked rows; rejecting them here would silently
-                // skip every sync. Only an explicit non-BOOK value (e.g. INFO,
-                // OTHR) should be filtered.
-                $statusRaw = isset($ebTransaction['transaction_status']) && is_string($ebTransaction['transaction_status'])
-                    ? $ebTransaction['transaction_status']
+                // Filter to BOOK rows per SPEC §6.2. Enable Banking emits this
+                // field as `status` in the payload — we store it in the DB
+                // column `transactions.transaction_status` (legacy column
+                // name, kept to avoid a rippling migration; see GH #46). Treat
+                // missing/empty as BOOK to mirror MatchUpdateOrInsert::parseIncoming's
+                // default — some banks omit the field for booked rows and
+                // rejecting them here would silently skip every sync. Only an
+                // explicit non-BOOK value (PDNG / INFO / OTHR / FUTR / …)
+                // is filtered.
+                $statusRaw = isset($ebTransaction['status']) && is_string($ebTransaction['status'])
+                    ? $ebTransaction['status']
                     : '';
                 if ($statusRaw !== '' && $statusRaw !== 'BOOK') {
                     continue;

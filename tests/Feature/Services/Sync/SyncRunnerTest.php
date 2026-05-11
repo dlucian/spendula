@@ -254,6 +254,81 @@ class SyncRunnerTest extends TestCase
         $this->assertSame(1, Transaction::query()->where('status', TransactionStatus::Skipped->value)->count());
     }
 
+    public function test_non_book_rows_are_filtered_pre_parse_and_do_not_abort_sync(): void
+    {
+        // Regression for GH #46. Before the fix, SyncRunner read EB's
+        // `status` field under the wrong key (`transaction_status`), so the
+        // non-BOOK guard never fired. ING's AIS feed surfaces PDNG card holds
+        // with `booking_date: null`, which then reached MatchUpdateOrInsert,
+        // threw InvalidArgumentException, and aborted the whole account.
+        //
+        // The fixture mixes the four shapes the filter must handle in one
+        // page: PDNG and INFO are dropped pre-parse; missing-status and
+        // empty-status default to BOOK (some banks omit the field entirely or
+        // send it as an empty string); explicit BOOK is the happy path. Only
+        // the BOOK, missing-status, and empty-status rows land.
+        $this->seedConnectionWithAccount('uid-eur');
+
+        $bookRow = $this->eurTransaction('ref-book');
+        $missingStatusRow = $this->eurTransaction('ref-missing');
+        unset($missingStatusRow['status']);
+        $emptyStatusRow = $this->eurTransaction('ref-empty');
+        $emptyStatusRow['status'] = '';
+
+        // PDNG and INFO rows mimic ING's card-hold shape: no booking_date, no
+        // value_date. If the filter doesn't drop them, the parser will throw.
+        $pdngRow = [
+            'entry_reference' => 'ref-pdng',
+            'status' => 'PDNG',
+            'booking_date' => null,
+            'value_date' => null,
+            'transaction_amount' => ['amount' => '85.32', 'currency' => 'EUR'],
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'debtor' => null,
+            'remittance_information' => ['Card no: **** 0429'],
+        ];
+        $infoRow = $pdngRow;
+        $infoRow['entry_reference'] = 'ref-info';
+        $infoRow['status'] = 'INFO';
+
+        Http::fake([
+            'https://api.enablebanking.test/accounts/uid-eur/transactions*' => Http::response([
+                'transactions' => [$pdngRow, $infoRow, $missingStatusRow, $emptyStatusRow, $bookRow],
+                'continuation_key' => null,
+            ], 200),
+        ]);
+
+        $this->artisan('spendula:sync')->assertSuccessful();
+
+        $this->assertSame(
+            3,
+            Transaction::query()->count(),
+            'BOOK, missing-status, and empty-status rows should land — PDNG and INFO must be filtered pre-parse, and empty-status must persist as BOOK (not violate the transaction_status CHECK constraint).',
+        );
+
+        $entryRefs = Transaction::query()->pluck('entry_reference')->all();
+        sort($entryRefs);
+        $this->assertSame(['ref-book', 'ref-empty', 'ref-missing'], $entryRefs);
+
+        // Empty/missing status rows must persist as BOOK so they survive the
+        // transactions_transaction_status_check CHECK constraint (BOOK|PDNG|INFO).
+        $this->assertSame(
+            3,
+            Transaction::query()->where('transaction_status', 'BOOK')->count(),
+            'Empty/missing EB status must default to BOOK at the parser, matching the sync filter.',
+        );
+
+        $run = SyncRun::query()->latest('id')->firstOrFail();
+        $this->assertSame(3, $run->transactions_inserted);
+        $this->assertSame(0, $run->error_count);
+
+        $syncState = BankAccountSyncState::query()->sole();
+        $this->assertSame(0, $syncState->consecutive_failure_count);
+        $this->assertNotNull($syncState->last_successful_sync_at);
+        $this->assertNull($syncState->last_continuation_key);
+    }
+
     private function seedConnectionWithAccount(string $uid): BankAccount
     {
         $connection = BankConnection::query()->create([
@@ -325,7 +400,7 @@ class SyncRunnerTest extends TestCase
     {
         return [
             'entry_reference' => $entryRef,
-            'transaction_status' => 'BOOK',
+            'status' => 'BOOK',
             'booking_date' => $bookingDate,
             'value_date' => $bookingDate,
             'transaction_amount' => ['amount' => $amount, 'currency' => 'EUR'],

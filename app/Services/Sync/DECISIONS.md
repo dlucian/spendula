@@ -41,6 +41,61 @@ first insert. If we later need stricter handling for tracking rows
 (e.g. recompute snapshot inputs on drift), it lives in the snapshot
 consumer, not here.
 
+## 2026-05-11 — Sync non-BOOK filter reads EB's `status`; DB column keeps legacy name `transaction_status` (GH #46)
+
+`SyncRunner::syncAccount()` and `MatchUpdateOrInsert::parseIncoming()`
+both read EB's `status` field directly from the raw payload. The DB
+column that stores the persisted value remains
+`transactions.transaction_status` — a legacy name from the original
+Phase 1a schema (commit `20ca3a1`), kept rather than migrated.
+
+**Why it stayed dormant until now.** The original SyncRunner code
+read `$ebTransaction['transaction_status']`, matching the DB column
+name but not EB's actual payload schema (which uses `status`). The
+filter never fired in production: BCP and Revolut LT, the two
+operator banks live before May 2026, do not surface PDNG / INFO rows
+in their AIS feeds — every row they emit is BOOK, and the parser's
+default fallback (`'BOOK'` when the key is absent) made the row land
+correctly anyway. The bug only became observable when ING Romania
+came online and started returning pending card holds (`status =
+PDNG`, `booking_date = null`) at the top of every transactions
+response, which fell through to the parser, threw on the missing
+`booking_date`, and aborted ING Romania business EUR account's sync entirely
+(0 transactions ingested over 3 sync runs).
+
+**Alternatives considered.**
+
+1. Rename the DB column `transaction_status → status`. Rejected: 
+   requires a migration plus updates to the Transaction model,
+   ~10 test files that insert into the column by name, and SPEC §4.
+   The naming mismatch is a one-time confusion that inline docblock
+   notes plus the SPEC §6.2 blockquote should prevent from recurring.
+
+2. Persist the raw payload first, then attempt parse out-of-band so
+   that no row is silently dropped. Rejected for this PR: the
+   existing comment at `SyncRunner::syncAccount()` lines 354-361
+   explains why advancing past an unparseable row is dangerous — EB
+   does not allow continuation-key replay, so the 7-day overlap
+   window is the only recovery path. Persist-first-then-parse would
+   need a parallel re-parse pipeline and a way to drain a backlog of
+   `unparseable` rows after a parser fix. Worth doing as a separate
+   workstream; not needed to unblock Rulaj.
+
+3. Special-case `booking_date = null` by falling back to
+   `value_date` or `transaction_date`. Rejected: would invent a
+   booking date that the bank hasn't yet committed to, breaking
+   `dedup_hash` stability — the same row could insert twice with
+   different fabricated dates if the bank later books it on yet
+   another date.
+
+**Consequences.** Future PDNG / INFO / OTHR / FUTR rows from any bank
+filter out cleanly pre-parse. The DB column name is now permanently
+misaligned with EB's schema; the SPEC and inline docblocks carry
+explicit notes to keep the next reader oriented. If a future feature
+ever needs the genuine EB value for a stored row, the truth is in
+`raw_payload->>'status'` (which is what the column should have
+shadowed all along).
+
 ## 2026-04-30 — Review/push exclusion of tracking rows is structural, not an explicit check
 
 Neither `ReviewSession::run()` nor `PushRunner::runLocked()` adds an

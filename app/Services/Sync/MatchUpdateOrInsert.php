@@ -169,9 +169,19 @@ class MatchUpdateOrInsert
             ? $ebTransaction['entry_reference']
             : null;
 
-        $transactionStatus = isset($ebTransaction['transaction_status']) && is_string($ebTransaction['transaction_status'])
-            ? $ebTransaction['transaction_status']
-            : 'BOOK';
+        // EB emits this field as `status` in the payload; we persist it under
+        // the legacy DB column name `transactions.transaction_status` (kept
+        // to avoid a rippling migration; see GH #46). Default to BOOK when
+        // missing or empty — must match SyncRunner's permissive treatment
+        // (it lets empty-string statuses through), otherwise an empty value
+        // would land here and violate the column's BOOK/PDNG/INFO CHECK
+        // constraint, aborting the account sync via QueryException. Banks
+        // that omit the field entirely on booked rows (and any that emit
+        // `status: ""`) end up persisted as BOOK.
+        $statusRaw = isset($ebTransaction['status']) && is_string($ebTransaction['status'])
+            ? $ebTransaction['status']
+            : '';
+        $transactionStatus = $statusRaw !== '' ? $statusRaw : 'BOOK';
 
         $rawCounterparty = $this->extractRawCounterparty($ebTransaction);
         $resolved = $this->resolver->resolve($ebTransaction, $account->bank_slug);

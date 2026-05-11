@@ -60,7 +60,7 @@ class MatchUpdateOrInsertTest extends TestCase
     {
         return array_replace_recursive([
             'entry_reference' => 'uxr2h',
-            'transaction_status' => 'BOOK',
+            'status' => 'BOOK',
             'booking_date' => '2026-04-15',
             'value_date' => '2026-04-15',
             'transaction_amount' => ['amount' => '34.57', 'currency' => 'EUR'],
