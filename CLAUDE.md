@@ -23,14 +23,14 @@ Authoritative spec: `docs/SPEC.md`. Phased implementation plan: `docs/PLAN.md`.
 Flat. This folder **is** the Laravel application root.
 
 - `app/`, `config/`, `database/`, `routes/`, `resources/`, `tests/`, `public/`, `storage/` — Laravel.
-- `docs/` — `SPEC.md` (authoritative), `PLAN.md` (phased roadmap), `DEPLOY.md` (host Caddy snippet + prod run book).
+- `docs/` — `SPEC.md` (authoritative), `PLAN.md` (phased roadmap), `DEPLOY.md` (host reverse-proxy snippet + prod run book).
 - `spike/` — PHP proof-of-concept, reference-only. **Do not modify.** Its `FINDINGS.md` contains hard-won gotchas worth rereading before touching Enable Banking or YNAB code.
 - `Dockerfile`, `docker-compose.prod.yml`, `docker/nginx/default.conf`, `.dockerignore` — production containerisation only.
 
 ## Deployment model
 
 - **Local dev**: bare metal on macOS. Homebrew PostgreSQL 18, system PHP 8.4. No Docker. Artisan commands run directly; the single HTTP route runs via `php artisan serve` on `http://localhost:8000` when the OAuth callback is needed.
-- **Production**: three-container Compose stack (`app`, `web`, `db`). Only `web` publishes a port, bound to `127.0.0.1:8765` on the host. The host's existing Caddy (already fronting other services, already Tailscale-integrated) reverse-proxies `spendula.example.com` → `localhost:8765`. The Caddy config lives on the server, not in this repo; `docs/DEPLOY.md` ships a template snippet the operator adds to their Caddyfile.
+- **Production**: three-container Compose stack (`app`, `web`, `db`). Only `web` publishes a port, bound to `127.0.0.1:8765` on the host. The host's existing reverse proxy (Caddy / nginx / Traefik — operator's choice) fronts `spendula.example.com` → `localhost:8765` and handles TLS termination. The reverse-proxy config lives on the server, not in this repo; `docs/DEPLOY.md` ships a template snippet the operator adds to their existing configuration.
 - Secrets on host (`.env`, `private.key`) are bind-mounted **read-only** into the `app` container.
 
 ## Phase 1 status
@@ -67,7 +67,7 @@ Phase-2 work starts once the production Enable Banking app is approved
 - `https://localhost/banking/callback`
 - `https://spendula.ddev.site/banking/callback` — DDEV fallback, not currently used
 
-Production app (phase 2) will register the Tailscale URL; see SPEC §9.5.
+Production app (phase 2) will register the operator's actual public-facing URL; see SPEC §9.5.
 
 ## When in doubt
 

@@ -1,6 +1,6 @@
 {
   "name": "Revolut LT",
-  "description": "Cleanup rules for Revolut. `rules` operate on remittance_information[0] at L2; `name_rules` operate on the resolved creditor/debtor name at L0/L1 — Revolut emits the dirty merchant string directly into EB structured fields, so name-side cleanup is essential. Both lists share the same Rule schema (regex pattern + replacement + tests) and the same first-match-wins semantics; only the input string and the call site differ.",
+  "description": "Example rule set for Revolut (Lithuania). Shipped as a reference for how to write counterparty rules — these rules reflect real EB production observations but are not required. Copy, adapt, or replace them for your own banks. `rules` operate on remittance_information[0] at L2; `name_rules` operate on the resolved creditor/debtor name at L0/L1 — Revolut emits the dirty merchant string directly into EB structured fields, so name-side cleanup is essential. Both lists share the same Rule schema (regex pattern + replacement + tests) and the same first-match-wins semantics; only the input string and the call site differ.",
   "name_rules": [
     {
       "name": "bolt-eu-embedded-id",

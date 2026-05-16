@@ -53,15 +53,15 @@ Phase 1a schema (commit `20ca3a1`), kept rather than migrated.
 read `$ebTransaction['transaction_status']`, matching the DB column
 name but not EB's actual payload schema (which uses `status`). The
 filter never fired in production: BCP and Revolut LT, the two
-operator banks live before May 2026, do not surface PDNG / INFO rows
+banks connected before May 2026, do not surface PDNG / INFO rows
 in their AIS feeds — every row they emit is BOOK, and the parser's
 default fallback (`'BOOK'` when the key is absent) made the row land
 correctly anyway. The bug only became observable when ING Romania
 came online and started returning pending card holds (`status =
 PDNG`, `booking_date = null`) at the top of every transactions
 response, which fell through to the parser, threw on the missing
-`booking_date`, and aborted ING Romania business EUR account's sync entirely
-(0 transactions ingested over 3 sync runs).
+`booking_date`, and aborted the ING Romania business EUR account's
+sync entirely (0 transactions ingested over 3 sync runs).
 
 **Alternatives considered.**
 

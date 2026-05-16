@@ -136,8 +136,9 @@ will silently error (see `spike/FINDINGS.md` #1).
 The sandbox EB app accepts `http://localhost:8000/banking/callback`. The
 production app only accepts `https://…` redirect URLs, so working with real
 bank consents from your local machine needs HTTPS termination in front of
-`php artisan serve`. Recipe (assumes a Tailscale-joined macOS dev box;
-substitute your own tailnet hostname for `prod.spendula.example`):
+`php artisan serve`. Recipe (uses Caddy on macOS — adapt to your own
+reverse proxy and OS as needed; substitute your own hostname for
+`prod.spendula.example`):
 
 ```bash
 # 1. Caddy with internal CA — terminates TLS, proxies to Laravel.
@@ -153,8 +154,7 @@ prod.spendula.example:8443 {
 }
 EOF
 
-# 2. /etc/hosts pin so the tailnet hostname resolves locally to 127.0.0.1.
-#    (Other tailnet peers still resolve to the real Tailscale IP.)
+# 2. /etc/hosts pin so the hostname resolves locally to 127.0.0.1.
 echo '127.0.0.1 prod.spendula.example' | sudo tee -a /etc/hosts
 sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder
 
@@ -212,6 +212,9 @@ inserted directly into the `banks` table by `spendula:banks:add` (SPEC §4.1).
 
 `spendula:auth:start <slug>` hard-fails on an unknown slug, so this step
 runs **before** the first real-bank consent.
+
+For example, to register Millennium BCP (Portugal, EUR) — one of the banks
+this repo ships counterparty rules for — under the slug `bcp`:
 
 ```bash
 php artisan spendula:banks:add \
@@ -362,6 +365,8 @@ timer surface (SPEC §14.1, §15).
 
 ### Consent expired / red
 
+Sample `spendula:status` output when a consent has lapsed:
+
 ```text
 Consent: bcp  red  expired 2 days ago
 ```
@@ -465,7 +470,7 @@ See [`docs/PLAN.md`](docs/PLAN.md) for phase-by-phase acceptance criteria.
 
 ## 14. Production deployment
 
-Three-container Docker Compose stack (`app`, `web`, `db`) behind the host's existing Caddy instance, reverse-proxied from `spendula.example.com` → `127.0.0.1:8765`.
+Three-container Docker Compose stack (`app`, `web`, `db`) behind the host's existing reverse proxy, which fronts `spendula.example.com` → `127.0.0.1:8765`.
 
 See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the deploy run book, the host Caddy snippet template, and the backup recipe.
 

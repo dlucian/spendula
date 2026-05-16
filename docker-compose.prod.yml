@@ -1,8 +1,8 @@
 # Production-only stack. Not for local dev — local dev runs bare metal on macOS.
 #
-# Spendula lives behind the host's existing Caddy instance, which reverse-proxies
-# spendula.example.com → 127.0.0.1:8765 and handles Tailscale-integrated TLS.
-# See docs/DEPLOY.md for the host Caddyfile snippet.
+# Spendula lives behind the host's existing reverse proxy (Caddy / nginx / Traefik —
+# operator's choice), which fronts spendula.example.com → 127.0.0.1:8765 and handles
+# TLS termination. See docs/DEPLOY.md for the reverse-proxy snippet template.
 #
 # Required on the host before `docker compose up -d`:
 #   - .env           (Laravel env, including DB_HOST=db, DB_USERNAME, DB_PASSWORD)

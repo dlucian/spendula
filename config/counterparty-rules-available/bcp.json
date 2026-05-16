@@ -1,6 +1,6 @@
 {
   "name": "Millennium BCP (Portugal)",
-  "description": "Cleanup rules for Millennium BCP remittance shapes observed in real EB production data. Rules are ordered most-specific first; first terminal match wins.",
+  "description": "Example rule set for Millennium BCP (Portugal). Shipped as a reference for how to write counterparty rules — these rules reflect real EB production observations but are not required. Copy, adapt, or replace them for your own banks. Rules are ordered most-specific first; first terminal match wins.",
   "rules": [
     {
       "name": "lev-atm-with-location",

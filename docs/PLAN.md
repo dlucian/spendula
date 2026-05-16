@@ -166,8 +166,8 @@ Migrations for **all** tables, including phase-2 and phase-3 tables (`exchange_r
 
 ### 2a. Production EB app registration (SPEC §9.5)
 
-- Privacy + terms pages deployed to GitHub Pages (suggested repo: `spendula-legal`). Templates in `docs/legal/` (created during this phase).
-- EB production application form submitted with `allowed_redirect_urls` including `https://spendula.example.com/banking/callback`.
+- Privacy + terms pages authored by the operator and deployed to a publicly-reachable URL (e.g. GitHub Pages). These documents are operator-entity-specific and are intentionally not shipped in this repository (see `docs/legal/README.md`).
+- EB production application form submitted with `allowed_redirect_urls` including `https://spendula.example.com/banking/callback` (substitute the operator's actual deployed hostname).
 - IBAN whitelisting completed via the EB dashboard for the operator's real accounts.
 
 **Acceptance:** `GET /application` against the production EB endpoint returns 200 with the production app ID.
@@ -180,23 +180,23 @@ Prompts per unmapped `bank_account` for: YNAB account selection (listed from `/p
 
 ### 2c. First real bank
 
-- Populate `config/spendula-banks.php` with Millennium BCP (highest volume) as the first real entry.
+- Add the operator's highest-volume real bank via `spendula:banks:add` (so the choice stays out of source control; see SPEC §4.1).
 - Run auth flow against the production EB app + real bank.
 - Sync first real transactions.
-- Record the first-sync JSON as a regression fixture under `tests/fixtures/enablebanking/millennium/`.
+- Record the first-sync JSON as a regression fixture under `tests/fixtures/enablebanking/<bank-slug>/`.
 
-**Acceptance:** transactions flow sync → review → push for Millennium; recorded fixtures cover ≥1 `BOOK` transaction with SEPA-correct direction semantics.
+**Acceptance:** transactions flow sync → review → push for that bank; recorded fixtures cover ≥1 `BOOK` transaction with SEPA-correct direction semantics.
 
 ### 2d. Counterparty ladder validation (SPEC §16.2.18)
 
-After a week of real Millennium data, run the `GROUP BY bank_slug, counterparty_resolution_level` query from SPEC §6.8. Tune the ladder if any bank predominantly lands ≥ level 2.
+After a week of real data from the connected bank, run the `GROUP BY bank_slug, counterparty_resolution_level` query from SPEC §6.8. Tune the ladder if any bank predominantly lands ≥ level 2.
 
 **Acceptance:** SQL query documented; tuning decisions (if any) committed with rationale.
 
 **Out of scope for phase 2:**
 
-- RON banks / tracking account logic (phase 3).
-- Revolut activation (phase 3 or whenever ready).
+- Tracking accounts / foreign-currency logic (phase 3).
+- Activation of additional banks beyond the first (phase 3 or whenever ready).
 - `status` dashboard (phase 4).
 
 **Rough size:** 1–2 sessions of engineering work; production app wall-time is the gating factor.
@@ -205,7 +205,7 @@ After a week of real Millennium data, run the `GROUP BY bank_slug, counterparty_
 
 ## Phase 3 — Tracking accounts and multi-currency
 
-**Goal:** RON bank accounts sync into Spendula and push balance snapshots to YNAB tracking accounts.
+**Goal:** foreign-currency bank accounts sync into Spendula and push balance snapshots to YNAB tracking accounts.
 
 ### 3a. Exchange rate client
 
@@ -219,23 +219,23 @@ After a week of real Millennium data, run the `GROUP BY bank_slug, counterparty_
 - Sync path for accounts with `ynab_account_type = tracking` inserts with `status = tracking` (terminal; bypasses review).
 - Pre-cutoff transactions still go to `status = skipped` (SPEC §6.5 last paragraph).
 
-**Acceptance:** integration test with a tracking-mapped Mock or Nordea account; transactions land with `status = tracking`, never enter review queue.
+**Acceptance:** integration test with a tracking-mapped Mock or real foreign-currency account; transactions land with `status = tracking`, never enter review queue.
 
 ### ~~3c. `spendula:tracking:snapshot` (SPEC §5.3)~~ (done 2026-04-30)
 
 ~~Compute native balance (via EB balances endpoint preferred, summed transactions fallback), convert to EUR at today's rate, fetch current YNAB balance, push delta as a `Balance Adjustment` transaction, record `tracking_snapshots` row.~~
 
-~~**Acceptance:** e2e against a real RON tracking account; repeated runs on the same day idempotent (deltas ≈ 0); snapshot row recorded.~~
+~~**Acceptance:** e2e against a real foreign-currency tracking account; repeated runs on the same day idempotent (deltas ≈ 0); snapshot row recorded.~~
 
 v1 ships the EB-balances path only; the transactions-sum fallback is deferred to a follow-up issue (no `opening_balance` column today; see `app/Console/Commands/Spendula/DECISIONS.md`).
 
-### 3d. Connect remaining RON banks + Revolut
+### 3d. Connect remaining banks
 
-ING RO Personal, ING RO Business, UniCredit RO mapped as tracking. Revolut mapped as on-budget if appropriate.
+Remaining banks added via `spendula:banks:add` and mapped according to currency: same-currency-as-budget accounts go on-budget; foreign-currency accounts go to tracking.
 
 **Out of scope for phase 3:**
 
-- Pushing individual RON transactions to YNAB (explicit non-goal).
+- Pushing individual foreign-currency transactions to YNAB (explicit non-goal).
 - Automatic snapshot cadence (manual only in v1).
 
 **Rough size:** 1–2 sessions.

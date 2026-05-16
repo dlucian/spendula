@@ -1,18 +1,19 @@
 # Spendula — Deployment run book
 
-Production runs as a three-container Docker Compose stack on the home server, fronted by the host's existing Caddy instance. Local dev is bare metal on macOS (see `README.md` for that). This document covers production only.
+Production runs as a three-container Docker Compose stack on the operator's server, fronted by the host's existing reverse proxy. Local dev is bare metal on macOS (see `README.md` for that). This document covers production only.
 
 ## Topology
 
 ```
-                                  Tailscale
-   spendula.example.com  ───────────────────┐
+                            Private network
+                          (tailnet / VPN / LAN)
+   spendula.example.com  ───────────────────────┐
                                                  │
                                        ┌─────────▼──────────┐
-                                       │  host Caddy        │
-                                       │  (pre-existing,    │
-                                       │  fronts multiple   │
-                                       │  services)         │
+                                       │  host reverse      │
+                                       │  proxy (Caddy,     │
+                                       │  nginx, Traefik…)  │
+                                       │  pre-existing      │
                                        └─────────┬──────────┘
                                                  │
                                   127.0.0.1:8765 │  (loopback only)
@@ -30,12 +31,12 @@ Production runs as a three-container Docker Compose stack on the home server, fr
                                └───────────────────────────────────┘
 ```
 
-Only `web` publishes a port; both `app` and `db` are compose-internal only. The `web` port is bound to `127.0.0.1:8765`, so nothing on the LAN or tailnet can reach the raw stack — Caddy is the sole entry point.
+Only `web` publishes a port; both `app` and `db` are compose-internal only. The `web` port is bound to `127.0.0.1:8765`, so nothing on the LAN or public internet can reach the raw stack — the reverse proxy is the sole entry point.
 
 ## Host prerequisites
 
 - Docker Engine + compose plugin installed.
-- Caddy already running on the host, already Tailscale-integrated, already serving other services from the same Caddyfile.
+- A reverse proxy (e.g. Caddy, nginx, Traefik) already running on the host, with TLS termination configured (Let's Encrypt or equivalent), serving on the operator's hostname of choice.
 - Outbound network from the host to `api.enablebanking.com`, `api.ynab.com`, and the chosen exchange-rate provider.
 
 ## First-time setup
@@ -57,7 +58,7 @@ $EDITOR .env
 # At minimum set:
 #   APP_ENV=production
 #   APP_DEBUG=false
-#   APP_URL=https://spendula.<your-tailnet>.ts.net
+#   APP_URL=https://spendula.example.com    # your actual hostname
 #   DB_HOST=db
 #   DB_DATABASE=spendula
 #   DB_USERNAME=spendula
@@ -65,7 +66,7 @@ $EDITOR .env
 #   SPENDULA_ENABLE_BANKING_APP_ID=...
 #   SPENDULA_YNAB_ACCESS_TOKEN=...
 #   SPENDULA_YNAB_PLAN_ID=...
-#   SPENDULA_CALLBACK_URL=https://spendula.<your-tailnet>.ts.net/banking/callback
+#   SPENDULA_CALLBACK_URL=https://spendula.example.com/banking/callback
 
 # 4. Build the app image.
 docker compose -f docker-compose.prod.yml build
@@ -80,24 +81,25 @@ docker compose -f docker-compose.prod.yml exec app php artisan migrate --force
 docker compose -f docker-compose.prod.yml exec app php artisan config:cache
 docker compose -f docker-compose.prod.yml exec app php artisan route:cache
 
-# 7. Wire up host Caddy (see "Host Caddy snippet" below).
+# 7. Wire up the host reverse proxy (see "Reverse-proxy snippet" below).
 ```
 
 Then run the initial bank link (`spendula:banks:sync` → `spendula:auth:start mock` → open URL in browser) to verify the round-trip.
 
-## Host Caddy snippet
+## Reverse-proxy snippet (Caddy example)
 
-Add to the existing `Caddyfile` (the file the host Caddy already uses for its other services), not to anything in this repo:
+The snippet below is for Caddy; adapt for nginx/Traefik/etc. as needed. Add it to your existing reverse-proxy configuration (not to anything in this repo):
 
 ```caddyfile
-spendula.<your-tailnet>.ts.net {
+spendula.example.com {
     reverse_proxy 127.0.0.1:8765
 
-    # Tailscale-integrated TLS — Caddy handles the cert automatically
-    # via its Tailscale certificate module. No config needed here.
+    # TLS — handled by the reverse proxy's own certificate management
+    # (Let's Encrypt, ACME, or whatever your stack uses). Nothing
+    # Spendula-specific is needed.
 
     # Callback rate limit (SPEC §9.2): 10 req/min per source IP.
-    # Requires the rate_limit module; if you don't have it, drop this block.
+    # Requires Caddy's rate_limit module; if you don't have it, drop this block.
     @callback path /banking/callback
     rate_limit @callback {
         zone banking_callback {
@@ -109,7 +111,7 @@ spendula.<your-tailnet>.ts.net {
 }
 ```
 
-Reload Caddy (`sudo systemctl reload caddy` or `caddy reload --config /etc/caddy/Caddyfile`) after editing.
+Reload the reverse proxy (`sudo systemctl reload caddy`, `nginx -s reload`, etc.) after editing.
 
 ## Deploy process (subsequent updates)
 
@@ -165,8 +167,8 @@ spendula() {
 
 Two reasons:
 
-1. **Caddy is the sole reachability point.** Publishing on `127.0.0.1` keeps the raw nginx/fpm stack off the LAN and off the tailnet. Nothing can bypass Caddy's rate limits or TLS by hitting the compose stack directly.
-2. **Port 8765 specifically** is just an uncommon port that doesn't conflict with the home server's other services. Change it in `docker-compose.prod.yml` and the Caddyfile together if you have a collision.
+1. **The reverse proxy is the sole reachability point.** Publishing on `127.0.0.1` keeps the raw nginx/fpm stack off the LAN and off the public internet. Nothing can bypass the proxy's rate limits or TLS by hitting the compose stack directly.
+2. **Port 8765 specifically** is just an uncommon port that doesn't conflict with other services. Change it in `docker-compose.prod.yml` and the reverse-proxy config together if you have a collision.
 
 ## Backups
 
@@ -184,5 +186,5 @@ The host's existing backup regime (which covers `/srv/spendula`) should also pic
 
 - **`app` container restarts in a loop** — check `docker compose logs app`. Usually one of: missing `.env`, missing `private.key`, wrong `DB_HOST` (must be `db`, not `127.0.0.1`), or a missing migration.
 - **Callback 502s** — `web` can reach `app:9000` inside the compose network but nginx's `fastcgi_pass` might have a slow DNS lookup on cold start. Check `docker compose logs web`.
-- **Caddy can't reach the stack** — confirm the `web` container is binding `127.0.0.1:8765:80` (`docker compose ps`); Caddy and the stack must be on the same host.
+- **Reverse proxy can't reach the stack** — confirm the `web` container is binding `127.0.0.1:8765:80` (`docker compose ps`); the reverse proxy and the stack must be on the same host.
 - **`migrate --force` fails with permission errors** — first-time, the `db` container needs to finish initialising before the app can connect. The healthcheck should gate this, but if it raced, just run `docker compose up -d` once more.

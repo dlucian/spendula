@@ -18,9 +18,9 @@ Spendula is not a YNAB alternative. It is a deliberate, narrow bridge that solve
 
 ### 1.3 Deployment context
 
-Spendula runs on the operator's home server, accessible over Tailscale at `https://spendula.example.com`. It is not exposed to the public internet.
+Spendula runs on the operator's home server, accessible at `https://spendula.example.com`. It is not exposed to the public internet.
 
-**Deployment model**: three-container Docker Compose stack (`app`, `web`, `db`) fronted by the host's existing Caddy instance. Only the `web` container publishes a port (`127.0.0.1:8765`); `app` and `db` stay on the compose internal network. The host's Caddy reverse-proxies `spendula.example.com` → `localhost:8765`. Caddy's Tailscale integration provides automatic TLS. The Caddy configuration lives on the host, not in this repository; deployment docs ship a template snippet the operator adds to their existing Caddyfile.
+**Deployment model**: three-container Docker Compose stack (`app`, `web`, `db`) fronted by the host's existing reverse proxy. Only the `web` container publishes a port (`127.0.0.1:8765`); `app` and `db` stay on the compose internal network. The host's reverse proxy fronts `spendula.example.com` → `localhost:8765` and handles TLS termination (Let's Encrypt or equivalent). The reverse-proxy configuration lives on the host, not in this repository; deployment docs ship a template snippet the operator adds to their existing configuration.
 
 **Local development** is bare metal on macOS (Homebrew Postgres 18, system PHP 8.4). No Docker locally. This deliberate asymmetry keeps dev fast while keeping prod hermetic.
 
@@ -30,7 +30,7 @@ External network calls:
 2. Outbound to `api.ynab.com` (destination of record)
 3. Outbound to a chosen exchange rate provider (for tracking-account balance snapshots)
 
-Inbound traffic is tailnet-only. User browsers (laptop, phone) must be on the tailnet when approving transactions or completing bank re-auth flows.
+Inbound traffic is restricted to the operator's private network (e.g. tailnet, VPN, or LAN-only). User browsers (laptop, phone) must be on that network when approving transactions or completing bank re-auth flows.
 
 ### 1.4 Users
 
@@ -399,17 +399,16 @@ One row per push of a balance snapshot to a YNAB tracking account.
 
 **EUR accounts are on-budget. Non-EUR accounts are tracking accounts.**
 
-- Millennium BCP (EUR) → on-budget YNAB account. Transactions pushed individually.
-- Revolut EUR → on-budget YNAB account. Transactions pushed individually.
-- ING Romania Personal (RON) → tracking YNAB account. Transactions stored in Spendula for audit; only balance snapshots push to YNAB.
-- ING Romania Business (RON) → tracking YNAB account. Same treatment.
-- UniCredit Romania (RON) → tracking YNAB account. Same treatment.
+- An EUR-denominated account whose currency matches the YNAB budget currency → on-budget YNAB account. Transactions pushed individually.
+- A second EUR account (different bank) → on-budget YNAB account, same treatment.
+- A non-budget-currency account (e.g. RON, in an EUR-budget household) → tracking YNAB account. Transactions stored in Spendula for audit; only balance snapshots push to YNAB.
+- A second non-budget-currency account → tracking YNAB account, same treatment.
 
 ### 5.2 Rationale
 
-- YNAB is strict about single-currency budgets. Mixing RON transactions into an EUR budget creates a permanently-unreconcilable shadow ledger: the RON account's actual balance diverges from the EUR-converted sum by exchange-rate drift.
+- YNAB is strict about single-currency budgets. Mixing foreign-currency transactions into a different-currency budget creates a permanently-unreconcilable shadow ledger: the foreign account's actual balance diverges from the converted sum by exchange-rate drift.
 - Tracking accounts in YNAB are explicitly designed for assets whose balance matters but whose detailed transactional activity does not affect the monthly budget (retirement accounts, investments, foreign accounts).
-- The RON accounts in this household are minority volume (~15% of transactions). Not worth the complexity of per-currency budgets or shadow-ledger revaluation in v1.
+- Foreign-currency accounts are typically minority volume for a single-currency household. Not worth the complexity of per-currency budgets or shadow-ledger revaluation in v1.
 
 ### 5.3 Tracking account lifecycle
 
@@ -444,7 +443,7 @@ Snapshots are manual in v1. Suggested: monthly, as part of month-close. Once per
 
 ### 5.6 Enable Banking bank-provided FX data
 
-When Enable Banking returns transactions with embedded exchange rate data (`currency_exchange` field on the transaction object, populated by some banks for cross-currency transactions like Revolut card purchases abroad), prefer that over external rate lookups. Store the bank-provided rate in `raw_payload` as-is; Spendula does not act on these in v1 (all on-budget accounts are EUR, so no conversion happens at transaction level) but preserves them for future use.
+When Enable Banking returns transactions with embedded exchange rate data (`currency_exchange` field on the transaction object, populated by some banks for cross-currency transactions like card purchases abroad), prefer that over external rate lookups. Store the bank-provided rate in `raw_payload` as-is; Spendula does not act on these in v1 (all on-budget accounts are EUR, so no conversion happens at transaction level) but preserves them for future use.
 
 ---
 
@@ -469,17 +468,16 @@ When Enable Banking returns transactions with embedded exchange rate data (`curr
 
 - If `bank_account_sync_state.last_fetched_through` is null (first sync): fetch from `today - bank.sync_lookback_days`.
 - Otherwise: fetch from `max(last_fetched_through - 7, today - bank.sync_lookback_days)`.
-- The 7-day overlap protects against delayed bookings and same-day status changes. The lookback cap prevents an unbounded first-sync against Millennium (which only retains 90 days anyway).
+- The 7-day overlap protects against delayed bookings and same-day status changes. The lookback cap prevents an unbounded first-sync against banks that retain only ~90 days of history.
 
-**Per-bank defaults:**
+**Profile defaults (tune per bank in `spendula:banks:add`):**
 
-| bank | `sync_lookback_days` | notes |
-|---|---|---|
-| millennium | 85 | Millennium caps at 90; leave margin |
-| ing_ro_personal | 365 | EB promises 730; 365 is plenty |
-| ing_ro_business | 365 | |
-| unicredit_ro | 365 | |
-| revolut | 180 | |
+| Profile                                | `sync_lookback_days` | notes                                |
+|----------------------------------------|----------------------|--------------------------------------|
+| Bank caps history at 90 days           | 85                   | Leave margin for the cap.            |
+| Bank promises 730 days (EB target)     | 365                  | 365 is plenty for most workflows.    |
+| First sync of a high-volume account    | 30                   | Limit the initial blast radius.      |
+| First sync of a low-volume account     | 180                  | Capture a fuller history up-front.   |
 
 **Status filtering:**
 
@@ -575,20 +573,20 @@ The uniqueness constraint is `UNIQUE(bank_account_id, dedup_hash, occurrence)`.
 
 For each transaction, try in order and record which level succeeded in `counterparty_resolution_level`:
 
-- **ATM short-circuit** (GH #42) — when `credit_debit_indicator = "DBIT"` AND `bank_transaction_code.code = "ATM"` (ISO 20022 cash-withdrawal code, case-insensitive), skip every name lookup and resolve to the configured synthetic label (`config('spendula.resolver.atm_cash_label')`, default `"ATM Cash"`, env override `SPENDULA_ATM_CASH_LABEL`) at **level 1**. Universal across banks. Rationale: SEPA-correctly the cardholder is the debtor on a cash withdrawal — useless as a YNAB payee, fragments every withdrawal under the operator's own legal name, and collides with self-transfer rows. The remittance text (e.g. Revolut's `"Cash at <street>"`) is intentionally ignored at this stage; location-aware payees are a deferred follow-up.
+- **ATM short-circuit** (GH #42) — when `credit_debit_indicator = "DBIT"` AND `bank_transaction_code.code = "ATM"` (ISO 20022 cash-withdrawal code, case-insensitive), skip every name lookup and resolve to the configured synthetic label (`config('spendula.resolver.atm_cash_label')`, default `"ATM Cash"`, env override `SPENDULA_ATM_CASH_LABEL`) at **level 1**. Universal across banks. Rationale: SEPA-correctly the cardholder is the debtor on a cash withdrawal — useless as a YNAB payee, fragments every withdrawal under the operator's own legal name, and collides with self-transfer rows. The remittance text (some banks emit a string like `"Cash at <street>"`) is intentionally ignored at this stage; location-aware payees are a deferred follow-up.
 - **Level 0** — direction-correct field:
   - `CRDT` (money in) → `debtor.name` (the other party is the debtor)
   - `DBIT` (money out) → `creditor.name` (the other party is the creditor)
 
-  The resolved name is then passed through the bank's optional `name_rules` cleanup pipeline (same Rule schema and first-match-wins semantics as the L2 `rules` list, only the input string and the call site differ). Used for banks like Revolut that emit dirty merchant strings into structured creditor/debtor fields. The rewrite is cleanup at the same level — `counterparty_resolution_level` stays 0.
+  The resolved name is then passed through the bank's optional `name_rules` cleanup pipeline (same Rule schema and first-match-wins semantics as the L2 `rules` list, only the input string and the call site differ). Used for banks that emit dirty merchant strings into structured creditor/debtor fields. The rewrite is cleanup at the same level — `counterparty_resolution_level` stays 0.
 - **Level 1** — direction-inverted (covers banks that report incorrectly, notably Mock ASPSP and some RO banks):
   - `CRDT` → `creditor.name`
   - `DBIT` → `debtor.name`
 
   Same `name_rules` cleanup as L0 applies; level stays 1.
 - **Level 2** — extract a counterparty from `remittance_information[0]`, truncated to 64 chars. Two strategies are tried in order:
-  - **Structured CSV pattern** (ING RO Business and similar) — when the line looks like `Card number, **** XXXX, Transaction at, <MERCHANT>, Authorization date, …`, the merchant between `Transaction at, ` and `, Authorization date,` is pulled out directly.
-  - **Prefix + suffix stripping** — strips known banking prefixes (`PURCHASE `, `POS `, `CARD PAYMENT `, `SEPA DD `, `SEPA CT `, BCP's `COMPRA NNNN ` / `TRF DE / MB WAY P / P / P O ` / `DD ` / `PAGSERV `) and the trailing ` CONTACTLESS` suffix some banks append to card-purchase lines.
+  - **Structured CSV pattern** — when the line looks like `Card number, **** XXXX, Transaction at, <MERCHANT>, Authorization date, …`, the merchant between `Transaction at, ` and `, Authorization date,` is pulled out directly.
+  - **Prefix + suffix stripping** — strips known banking prefixes (`PURCHASE `, `POS `, `CARD PAYMENT `, `SEPA DD `, `SEPA CT `, BCP-style `COMPRA NNNN ` / `TRF DE / MB WAY P / P / P O ` / `DD ` / `PAGSERV `) and the trailing ` CONTACTLESS` suffix some banks append to card-purchase lines.
 - **Level 3** — fall back to `additional_information` if present, else `bank_transaction_code.description` if present. Both are EB-provided augmentation metadata; `additional_information` keeps priority because it's free-text and usually more specific, while `bank_transaction_code.description` carries the bank's posting category (e.g. `Service Fee`, `Interest adjustment`) for fee/interest entries with no other descriptor.
 - **Level 4** — literal `"(Unknown)"`. Transaction is flagged with a warning icon in review CLI.
 
@@ -608,7 +606,7 @@ A SQL query grouping `bank_slug` by `counterparty_resolution_level` after a mont
 
 ```
 ──────────────────────────────────────────────────────────
-[3/47]  Millennium BCP · Main Checking · EUR
+[3/47]  ExampleBank · Main Checking · EUR
 2026-04-15  −€34.57  →  PINGO DOCE AREEIRO
         resolution level 0 · entry_ref=uxr2h
 ────────────────────────
@@ -740,9 +738,9 @@ These are v2 features (§14). The v1 choice explicitly prioritizes shipping over
 
 ### 8.3 Why this works
 
-A transfer from Millennium (EUR) to Revolut (EUR) lands in Spendula as two separate transactions, one on each bank account. The operator tags both as `transfer` during review. Both push to YNAB as `[TRANSFER]`-prefixed regular transactions. The net budget impact is zero (since categorization happens in YNAB, the operator would categorize them to a "Transfer" category or use YNAB's proper transfer mechanism to consolidate).
+A transfer from Bank A (EUR) to Bank B (EUR) lands in Spendula as two separate transactions, one on each bank account. The operator tags both as `transfer` during review. Both push to YNAB as `[TRANSFER]`-prefixed regular transactions. The net budget impact is zero (since categorization happens in YNAB, the operator would categorize them to a "Transfer" category or use YNAB's proper transfer mechanism to consolidate).
 
-Transfers involving RON accounts are even simpler: the RON side is on a tracking account and doesn't generate individual transactions. Only the EUR side is visible and is tagged as transfer.
+Transfers involving foreign-currency accounts are even simpler: the foreign-currency side is on a tracking account and doesn't generate individual transactions. Only the budget-currency side is visible and is tagged as transfer.
 
 ---
 
@@ -750,7 +748,7 @@ Transfers involving RON accounts are even simpler: the RON side is on a tracking
 
 ### 9.1 Initial link
 
-1. Operator runs `spendula:auth:start millennium`.
+1. Operator runs `spendula:auth:start <bank-slug>` (e.g. `spendula:auth:start example`).
 2. Command:
    - Inserts a new `auth_requests` row with random `state`, `bank_slug`, `expires_at = now + 15 min`.
    - Calls `POST /auth` on Enable Banking with:
@@ -768,9 +766,9 @@ Transfers involving RON accounts are even simpler: the RON side is on a tracking
 
 The single HTTP route in v1. No Laravel auth middleware. Access control is:
 
-- Tailnet-only reachability (Caddy binds only to the Tailscale interface).
+- Private-network reachability only (the reverse proxy is bound to the operator's tailnet, VPN, or LAN interface).
 - `state` validation: must match a non-consumed, non-expired row in `auth_requests`.
-- Rate limiting at Caddy level: 10 req/min per source IP (prevents state-guessing attacks).
+- Rate limiting at the reverse-proxy level: 10 req/min per source IP (prevents state-guessing attacks).
 
 Handler logic, inside a single DB transaction:
 
@@ -784,11 +782,11 @@ Handler logic, inside a single DB transaction:
    - Insert the new `bank_connections` row with `status = active`.
    - For each account in the response: run the identifier-matching algorithm (§4.4). Upsert `bank_accounts` as needed, add identifiers, create `bank_account_sessions` link.
    - Initialize `bank_account_sync_state` for any new accounts.
-7. Render a success page listing the accounts discovered: "Connected Millennium BCP. 2 accounts discovered: Main Checking (EUR), Savings (EUR). You can close this tab."
+7. Render a success page listing the accounts discovered: "Connected ExampleBank. 2 accounts discovered: Main Checking (EUR), Savings (EUR). You can close this tab."
 
 ### 9.3 No user login in v1
 
-The `users` table is removed from the v1 schema. No Laravel auth guard, no session middleware, no login UI. The only HTTP surface is the callback, protected by state + tailnet.
+The `users` table is removed from the v1 schema. No Laravel auth guard, no session middleware, no login UI. The only HTTP surface is the callback, protected by state + private-network-only reachability.
 
 When v2 adds a web review UI, real auth gets designed then.
 
@@ -804,13 +802,13 @@ Production app registration is separate from sandbox. The production app is what
 
 | Field | Value |
 |---|---|
-| `allowed_redirect_urls` | `https://spendula.example.com/banking/callback` plus any dev fallbacks (`http://localhost:8000/banking/callback`, `https://spendula.ddev.site/banking/callback`, `https://localhost/banking/callback`) |
+| `allowed_redirect_urls` | `https://spendula.example.com/banking/callback` (the operator's actual deployed hostname) plus any dev fallbacks (`http://localhost:8000/banking/callback`, `https://spendula.ddev.site/banking/callback`, `https://localhost/banking/callback`) |
 | Application description | Short paragraph describing Spendula as a single-user self-hosted personal-finance tool that uses AIS only (no PIS), is not offered as a service to third parties, and processes only the operator's own bank data |
 | `gdpr_email` | A real monitored email address |
 | `privacy_url` | A publicly-reachable URL serving a privacy policy |
 | `terms_url` | A publicly-reachable URL serving terms of service |
 
-**Hosting privacy and terms**: Privacy and terms URLs must be publicly reachable for Enable Banking's validation to succeed. Tailnet-only URLs will not pass. The recommended host is GitHub Pages (free, static, persistent). Template content for both documents is provided in the repository under `docs/legal/` and should be deployed to a separate `spendula-legal` repo on GitHub Pages before the application form is submitted.
+**Hosting privacy and terms**: Privacy and terms URLs must be publicly reachable for Enable Banking's validation to succeed. Private-network-only URLs (tailnet, VPN, LAN) will not pass. The recommended host is GitHub Pages (free, static, persistent). The operator authors their own privacy/terms documents (these are operator-entity-specific and are not shipped in this repository — see `docs/legal/README.md`) and deploys them to a public host before the application form is submitted.
 
 **Activation path**: Production apps start in "pending" state. Spendula's intended activation path is the free-tier IBAN-whitelisting route (not contractual onboarding), reflecting the single-user self-hosted use case. After registration, the operator whitelists their own IBANs via the Enable Banking dashboard; once whitelisted, real bank flows work against those specific IBANs at no charge.
 
@@ -935,7 +933,7 @@ Phase 1 does not require the production stack to be running locally. The product
 - `web` — `nginx:alpine` with a site config that FastCGI-passes to `app:9000`. Mounts the `public/` directory from the app container. **Publishes `127.0.0.1:8765:80`** — bound to loopback only; not reachable from the LAN.
 - `db` — `postgres:18-alpine` with a named volume for data. No published port. Only reachable by `app` on the compose internal network.
 
-**Host Caddy** (already running, shared with other services) reverse-proxies `spendula.example.com` → `127.0.0.1:8765`. Caddy handles TLS via its Tailscale integration. The Caddy configuration lives on the host, not in this repo; deployment docs ship a template snippet like:
+**Host reverse proxy** (already running, shared with other services) fronts `spendula.example.com` → `127.0.0.1:8765` and handles TLS termination (Let's Encrypt or equivalent). The reverse-proxy configuration lives on the host, not in this repo; deployment docs ship a template snippet (Caddy syntax shown here) like:
 
 ```
 spendula.example.com {
@@ -943,9 +941,9 @@ spendula.example.com {
 }
 ```
 
-The operator adds this block to the host Caddyfile when first deploying.
+The operator adds this block to their existing reverse-proxy configuration when first deploying.
 
-**Why port 8765 on loopback**: keeps the stack isolated from the host network. Caddy is the sole reachability point; Docker's port publishing is minimized to a single private binding. No tailnet or LAN exposure of the raw compose services.
+**Why port 8765 on loopback**: keeps the stack isolated from the host network. The reverse proxy is the sole reachability point; Docker's port publishing is minimized to a single private binding. No public or LAN exposure of the raw compose services.
 
 **Secrets**: `.env` on the host is never committed. The `app` container reads it via the standard Laravel mechanism.
 
@@ -983,16 +981,16 @@ No rolling deploys, no zero-downtime requirements — single-user tool, brief do
 7. Three-state review queue (Approve / Skip / Transfer) as interactive CLI.
 8. Retry-safe YNAB push with stable `import_id` including `occurrence` disambiguator.
 9. On-budget (EUR) handling: individual transaction push.
-10. Tracking (RON) handling: transactions stored for audit, balance snapshots pushed on demand.
+10. Tracking-account handling for foreign-currency accounts: transactions stored for audit, balance snapshots pushed on demand.
 11. Per-bank-account import cutoff date.
-12. Five pre-seeded banks (Millennium BCP, ING RO Personal, ING RO Business, UniCredit RO, Revolut).
+12. One pre-seeded bank: the `mock` ASPSP for local development and tests. Operators add real banks via `spendula:banks:add` (which writes to the `banks` table, not source control, so the choice of institutions does not appear in this repository).
 13. Artisan commands: `banks:sync`, `auth:start`, `accounts:map`, `sync`, `review`, `push`, `status`, `convert-pending`, `tracking:snapshot`.
 14. Structured error tables (`sync_run_errors`, `push_run_errors`).
 15. Redacted structured logging.
 16. Advisory locks on all long-running commands.
 17. Transactional callback handler with raw-response-first persistence.
 18. PHPStan level 8, Pint formatting, unit + fixture integration tests.
-19. Caddy + Tailscale deployment.
+19. Docker Compose stack + host reverse-proxy deployment topology.
 20. Setup README covering: key generation, Enable Banking app registration (sandbox and production, including `gdpr_email` / `privacy_url` / `terms_url` requirements for production), YNAB PAT generation, database bootstrap, first auth, first sync, first push. (Satisfied by README §3 Prerequisites, §6 Production EB registration, §11 Troubleshooting.)
 
 ### 14.1 v1 non-goals (explicitly deferred)
@@ -1064,7 +1062,7 @@ Goal: `artisan spendula:sync` pulls transactions from Mock ASPSP into Postgres, 
 10. **Stubs for deferred commands**: `spendula:accounts:map`, `spendula:status`, `spendula:convert-pending`, `spendula:tracking:snapshot` all exist as artisan commands that print "not yet implemented (phase N)" and have passing smoke tests.
 11. **Production Docker artifacts**: `Dockerfile`, `docker/nginx/default.conf`, `docker-compose.prod.yml`, `.dockerignore`. Verified by `docker compose -f docker-compose.prod.yml build`. Not started locally.
 12. **Tests**: unit suite covering money math, counterparty resolution, dedup hash, `import_id`, memo construction, sync window. Integration tests covering sync idempotency, push round-trip, transfer memo prefix. Smoke tests for every artisan command including stubs.
-13. **Docs**: `README.md` covering local dev setup and prod deploy; `docs/DEPLOY.md` with the host Caddy snippet template; `CLAUDE.md` at repo root orienting future sessions.
+13. **Docs**: `README.md` covering local dev setup and prod deploy; `docs/DEPLOY.md` with the host reverse-proxy snippet template; `CLAUDE.md` at repo root orienting future sessions.
 
 Phase 1 is complete when: (a) Mock ASPSP seeded with N>1 transactions flows cleanly through sync → review → push into YNAB, verifiable in the YNAB web UI; (b) re-running sync produces 0 inserts (idempotency); (c) `docker compose build` succeeds; (d) `php artisan test` green; (e) PHPStan level 8 green.
 
@@ -1074,19 +1072,19 @@ Goal: replace Mock with real banks. Requires production Enable Banking app regis
 
 14. Production Enable Banking app registration: privacy/terms pages deployed to GitHub Pages; application form submitted; IBAN whitelisting completed.
 15. `spendula:accounts:map` interactive implementation.
-16. Additional bank configs activated in `config/spendula-banks.php` (Millennium BCP first — highest transaction volume).
+16. First real bank added via `spendula:banks:add` (operator typically picks the highest-volume account for the first cutover).
 17. Recorded fixtures captured from each real bank's first sync for use in regression tests.
 18. Counterparty resolution ladder validation per bank: after a week of real data, check `SELECT bank_slug, counterparty_resolution_level, count(*) FROM transactions GROUP BY 1, 2` and tune ladder if any bank sits predominantly at level 2+.
 
 ### 16.3 Phase 3 — tracking accounts and multi-currency
 
-Goal: RON bank accounts (ING RO Personal, ING RO Business, UniCredit RO) sync into Spendula and push balance snapshots into YNAB tracking accounts.
+Goal: foreign-currency bank accounts sync into Spendula and push balance snapshots into YNAB tracking accounts.
 
 19. Exchange rate client (default: frankfurter.app).
 20. `exchange_rates` table usage; caching logic.
 21. Sync path for tracking accounts: inserts with `status = tracking` instead of `fetched`.
 22. `spendula:tracking:snapshot` real implementation.
-23. Revolut activation (if not already on-budget-only).
+23. Remaining banks activated (on-budget or tracking depending on currency).
 
 ### 16.4 Phase 4 — supporting commands
 

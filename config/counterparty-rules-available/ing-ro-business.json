@@ -1,6 +1,6 @@
 {
   "name": "ING Bank Romania",
-  "description": "Cleanup rules for ING Romania remittance shapes. ING uses a structured CSV-like envelope where each field is 'Key, value, Key, value, ...'. The merchant/counterparty lives in different positions depending on the transaction type, so each rule pins a specific shape. Same envelope on business and personal accounts; this file is shared by both bank slugs via symlink.",
+  "description": "Example rule set for ING Bank Romania (business and personal accounts share the same envelope, so the personal-slug file is a symlink to this one). Shipped as a reference for how to write counterparty rules — these rules reflect real EB production observations but are not required. Copy, adapt, or replace them for your own banks. ING uses a structured CSV-like envelope where each field is 'Key, value, Key, value, ...'. The merchant/counterparty lives in different positions depending on the transaction type, so each rule pins a specific shape.",
   "rules": [
     {
       "name": "card-twilio",
@@ -109,9 +109,9 @@
       "replacement": "$1",
       "post": ["trim", "collapse"],
       "tests": [
-        {"in": "Reference number, 1317, Beneficiary, EXAMPLE COMPANY  SRL, To account, RO49EXAMPLEEXAMPLE000002, Details, transfer, Value date, 05-05-2026", "out": "EXAMPLE COMPANY SRL"},
+        {"in": "Reference number, 1317, Beneficiary, EXAMPLE COMPANY  SRL, To account, RO49EXAMPLEEXAMPLE000001, Details, transfer, Value date, 05-05-2026", "out": "EXAMPLE COMPANY SRL"},
         {"in": "Reference number, 2728672605, Beneficiary, JANE DOE, To account, PT50EXAMPLEEXAMPLE0000001, Bank, BANCO COMERCIAL PORTUGUES, Details, avans, Value date, 06-05-2026", "out": "JANE DOE"},
-        {"in": "Reference number, 1313, Beneficiary, EXAMPLE COMPANY  SRL, To account, RO49EXAMPLEEXAMPLE000003, Amount, 16.563,69 RON, Rate, 5,01930", "out": "EXAMPLE COMPANY SRL"},
+        {"in": "Reference number, 1313, Beneficiary, EXAMPLE COMPANY  SRL, To account, RO49EXAMPLEEXAMPLE000002, Amount, 16.563,69 RON, Rate, 5,01930", "out": "EXAMPLE COMPANY SRL"},
         {"in": "Reference number, 2894652603, Beneficiary, Wise Europe SA, To account, BE49EXAMPLE00001, Bank, Transferwise Europe SA/NV, Details, P7293903, Value date, 06-03-2026", "out": "Wise Europe SA"}
       ]
     },
@@ -123,7 +123,7 @@
       "post": ["trim", "collapse"],
       "tests": [
         {"in": "Reference number, 6462372605, Ordering party, TEXTALK AB, From account, SE2850000000050598298428, Details, M1016, Value date, 05-05-2026, Message, qQHErjnTHBnavQ3A", "out": "TEXTALK AB"},
-        {"in": "Reference number, 9419, Ordering party, EXAMPLE COMPANY  SRL, From account, RO49EXAMPLEEXAMPLE000004, Amount, 3.300,00 EUR, Rate, 5,01930", "out": "EXAMPLE COMPANY SRL"},
+        {"in": "Reference number, 9419, Ordering party, EXAMPLE COMPANY  SRL, From account, RO49EXAMPLEEXAMPLE000003, Amount, 3.300,00 EUR, Rate, 5,01930", "out": "EXAMPLE COMPANY SRL"},
         {"in": "Reference number, 7786822604, Ordering party, STRIPE, From account, NL41CITI2032304805, Details, STRIPE, Value date, 20-04-2026, Message, STRIPE-MDOL5YZAMN9Z7FJFBOZNUXWJ4CRN", "out": "STRIPE"}
       ]
     },
