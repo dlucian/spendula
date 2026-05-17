@@ -607,7 +607,7 @@ A SQL query grouping `bank_slug` by `counterparty_resolution_level` after a mont
 ```
 ──────────────────────────────────────────────────────────
 [3/47]  ExampleBank · Main Checking · EUR
-2026-04-15  −€34.57  →  PINGO DOCE AREEIRO
+2026-04-15  −€34.57  →  PINGO DOCE LISBOA
         resolution level 0 · entry_ref=uxr2h
 ────────────────────────
 [a]pprove  [s]kip  [t]ransfer  [u]ndo  [d]etails  [q]uit

@@ -65,9 +65,9 @@ class MatchUpdateOrInsertTest extends TestCase
             'value_date' => '2026-04-15',
             'transaction_amount' => ['amount' => '34.57', 'currency' => 'EUR'],
             'credit_debit_indicator' => 'DBIT',
-            'creditor' => ['name' => 'PINGO DOCE AREEIRO'],
+            'creditor' => ['name' => 'PINGO DOCE LISBOA'],
             'debtor' => null,
-            'remittance_information' => ['CARD PAYMENT PINGO DOCE AREEIRO'],
+            'remittance_information' => ['CARD PAYMENT PINGO DOCE LISBOA'],
         ], $overrides);
     }
 
@@ -79,7 +79,7 @@ class MatchUpdateOrInsertTest extends TestCase
         $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
         $this->assertSame(-34570, $result->transaction->amount_milliunits);
         $this->assertSame(CreditDebitIndicator::Debit, $result->transaction->credit_debit_indicator);
-        $this->assertSame('PINGO DOCE AREEIRO', $result->transaction->counterparty_name);
+        $this->assertSame('PINGO DOCE LISBOA', $result->transaction->counterparty_name);
         $this->assertSame(0, $result->transaction->counterparty_resolution_level);
         $this->assertSame(1, $result->transaction->occurrence);
         $this->assertSame(32, strlen($result->transaction->dedup_hash));
@@ -99,7 +99,7 @@ class MatchUpdateOrInsertTest extends TestCase
         $first = $this->apply->apply($this->account, $this->sampleTransaction());
 
         $updated = $this->sampleTransaction([
-            'remittance_information' => ['CARD PAYMENT PINGO DOCE AREEIRO · extra detail'],
+            'remittance_information' => ['CARD PAYMENT PINGO DOCE LISBOA · extra detail'],
             'value_date' => '2026-04-16',
         ]);
 
@@ -264,14 +264,14 @@ class MatchUpdateOrInsertTest extends TestCase
             $this->account->refresh(),
             $this->sampleTransaction([
                 'booking_date' => '2026-04-15',
-                'remittance_information' => ['CARD PAYMENT PINGO DOCE AREEIRO · later detail'],
+                'remittance_information' => ['CARD PAYMENT PINGO DOCE LISBOA · later detail'],
             ]),
         );
 
         $this->assertSame(ApplyOutcome::Updated, $second->outcome);
         $this->assertSame($first->transaction->id, $second->transaction->id);
         $this->assertSame(
-            'CARD PAYMENT PINGO DOCE AREEIRO · later detail',
+            'CARD PAYMENT PINGO DOCE LISBOA · later detail',
             $second->transaction->refresh()->remittance_information,
         );
         $this->assertSame(TransactionStatus::Tracking, $second->transaction->refresh()->status);

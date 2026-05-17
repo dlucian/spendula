@@ -42,11 +42,11 @@ class ResolverTest extends TestCase
     {
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'DBIT',
-            'creditor' => ['name' => 'PINGO DOCE AREEIRO'],
+            'creditor' => ['name' => 'PINGO DOCE LISBOA'],
             'debtor' => ['name' => null],
         ]);
 
-        $this->assertSame('PINGO DOCE AREEIRO', $resolved->name);
+        $this->assertSame('PINGO DOCE LISBOA', $resolved->name);
         $this->assertSame(0, $resolved->level);
     }
 
@@ -394,10 +394,10 @@ class ResolverTest extends TestCase
         // squashes the BCP-padded internal whitespace into single spaces.
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'DBIT',
-            'remittance_information' => ['DD SUNSETFITGYM   2010           PT81118656'],
+            'remittance_information' => ['DD EXAMPLEGYM   2010           PT99000001'],
         ], 'bcp');
 
-        $this->assertSame('SUNSETFITGYM 2010', $resolved->name);
+        $this->assertSame('EXAMPLEGYM 2010', $resolved->name);
     }
 
     public function test_level_2_strips_bcp_pag_bxval_prefix_for_viaverde(): void
@@ -500,7 +500,7 @@ class ResolverTest extends TestCase
         // trailing booking ID so all four shapes collapse to "Bolt.eu".
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'DBIT',
-            'creditor' => ['name' => 'Bolt.euo2604281114'],
+            'creditor' => ['name' => 'Bolt.euo1234567890'],
         ], 'revolut');
 
         $this->assertSame('Bolt.eu', $resolved->name);
@@ -511,7 +511,7 @@ class ResolverTest extends TestCase
     {
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'DBIT',
-            'creditor' => ['name' => 'Bolt.eu/o/2604030805'],
+            'creditor' => ['name' => 'Bolt.eu/o/5544332211'],
         ], 'revolut');
 
         $this->assertSame('Bolt.eu', $resolved->name);
@@ -536,10 +536,10 @@ class ResolverTest extends TestCase
         // must be preserved (no rules consulted, raw name returned).
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'DBIT',
-            'creditor' => ['name' => 'Bolt.euo2604281114'],
+            'creditor' => ['name' => 'Bolt.euo1234567890'],
         ]);
 
-        $this->assertSame('Bolt.euo2604281114', $resolved->name);
+        $this->assertSame('Bolt.euo1234567890', $resolved->name);
         $this->assertSame(0, $resolved->level);
     }
 
@@ -685,7 +685,7 @@ class ResolverTest extends TestCase
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'CRDT',
             'debtor' => null,
-            'creditor' => ['name' => 'Bolt.euo2604281114'],
+            'creditor' => ['name' => 'Bolt.euo1234567890'],
         ], 'revolut');
 
         $this->assertSame('Bolt.eu', $resolved->name);
@@ -772,11 +772,11 @@ class ResolverTest extends TestCase
     {
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'DBIT',
-            'creditor' => ['name' => 'PINGO DOCE AREEIRO'],
+            'creditor' => ['name' => 'PINGO DOCE LISBOA'],
             'bank_transaction_code' => ['code' => 'CARD'],
         ]);
 
-        $this->assertSame('PINGO DOCE AREEIRO', $resolved->name);
+        $this->assertSame('PINGO DOCE LISBOA', $resolved->name);
         $this->assertSame(0, $resolved->level);
     }
 
@@ -784,10 +784,10 @@ class ResolverTest extends TestCase
     {
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'DBIT',
-            'creditor' => ['name' => 'PINGO DOCE AREEIRO'],
+            'creditor' => ['name' => 'PINGO DOCE LISBOA'],
         ]);
 
-        $this->assertSame('PINGO DOCE AREEIRO', $resolved->name);
+        $this->assertSame('PINGO DOCE LISBOA', $resolved->name);
         $this->assertSame(0, $resolved->level);
     }
 
@@ -796,11 +796,11 @@ class ResolverTest extends TestCase
         // Defensive: bank emits the field but with a non-string value.
         $resolved = $this->resolver->resolve([
             'credit_debit_indicator' => 'DBIT',
-            'creditor' => ['name' => 'PINGO DOCE AREEIRO'],
+            'creditor' => ['name' => 'PINGO DOCE LISBOA'],
             'bank_transaction_code' => ['code' => 42],
         ]);
 
-        $this->assertSame('PINGO DOCE AREEIRO', $resolved->name);
+        $this->assertSame('PINGO DOCE LISBOA', $resolved->name);
         $this->assertSame(0, $resolved->level);
     }
 

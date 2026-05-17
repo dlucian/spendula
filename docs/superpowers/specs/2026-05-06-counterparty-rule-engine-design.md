@@ -144,7 +144,7 @@ function resolveRemittance(remittance, bankSlug):
 
 **No match → trimmed remittance.** Preserves the current Resolver's
 behaviour: clean remittances like `EXAMPLE COMPANY  SRL` pass through
-intact, noisy ones like `SUNSETFITGYM   2010           PT81118656`
+intact, noisy ones like `EXAMPLEGYM   2010           PT99000001`
 also pass through intact (visible to the operator, who can write a
 rule if it bothers them). Empty remittance still falls through to
 L3 (`additional_information`) and L4 ("(Unknown)").

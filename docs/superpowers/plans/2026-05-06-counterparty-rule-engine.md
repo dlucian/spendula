@@ -1321,7 +1321,7 @@ Create `config/counterparty-rules-available/bcp.json`:
     },
     {
       "name": "dd-fallthrough",
-      "description": "DD line that didn't match dd-with-reference. Strip 'DD ' prefix only, preserve the rest. Handles short refs (SUNSETFITGYM 2010), refs without PT/DI suffix, and merchant names that contain digits.",
+      "description": "DD line that didn't match dd-with-reference. Strip 'DD ' prefix only, preserve the rest. Handles short refs (EXAMPLEGYM 2010), refs without PT/DI suffix, and merchant names that contain digits.",
       "pattern": "/^DD\\s+(.+)$/i",
       "replacement": "$1",
       "tests": [

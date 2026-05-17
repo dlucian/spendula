@@ -207,7 +207,7 @@
     To account, ...` → `BUGETUL DE STAT`. Inserted *before* `beneficiary-first`
     so the more specific shape wins.
 - `beneficiary-first` (existing) — description updated; the
-  `BUGETUL DE STAT/27263785` test fixture relocated to the new rule and
+  `BUGETUL DE STAT/12345678` test fixture relocated to the new rule and
   replaced with a synthetic `BUGETUL DE STAT` (no /digits) shadow check
   so the engine's fallthrough is exercised.
 - `structured-card-purchase` (existing) — description updated; two shadow
@@ -456,10 +456,10 @@ Resolution-level distribution unchanged.
     is 8+ digits so descriptors that embed numbers themselves
     (e.g. `DD ACME 2024 PT12345678`, `DD GYM 1234 PREMIUM 000123
     PT12345678`) fall through to plain DD prefix-stripping rather
-    than being mis-cut. SUNSETFITGYM (real BCP merchant with a
-    4-digit ref) is accepted as collateral — its rows fall through
-    to the noisy form, which is strictly safer than over-merging
-    distinct year-suffixed merchants.
+    than being mis-cut. EXAMPLEGYM (4-digit-ref merchant shape
+    observed on BCP) is accepted as collateral — its rows fall
+    through to the noisy form, which is strictly safer than
+    over-merging distinct year-suffixed merchants.
   - **PAG BXVAL- (Via Verde tolls)**: new prefix pattern
     `/^PAG\s+BXVAL-\s+\d+\s+/i` so `PAG BXVAL- 5962 VIAVERDE` →
     `VIAVERDE`.
@@ -485,7 +485,7 @@ Resolution-level distribution unchanged.
   surfaced across six codex review rounds: DD without creditor-id
   suffix, DD with embedded year/plan codes, DD with numeric
   intermediate token, DD with short reference directly before the
-  creditor id, and the SUNSETFITGYM trade-off documenting the
+  creditor id, and the EXAMPLEGYM trade-off documenting the
   4-digit-ref fall-through.
 
 ### Assumptions made

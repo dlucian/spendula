@@ -38,12 +38,12 @@
     },
     {
       "name": "dd-short-reference",
-      "description": "BCP DD line that has a PT/DI authorization id but no 8+ digit booking reference (so dd-with-reference rejected it). Strip the PT/DI tail and collapse internal whitespace so short merchant codes (SUNSETFITGYM 2010) aggregate cleanly.",
+      "description": "BCP DD line that has a PT/DI authorization id but no 8+ digit booking reference (so dd-with-reference rejected it). Strip the PT/DI tail and collapse internal whitespace so short merchant codes (EXAMPLEGYM 2010) aggregate cleanly.",
       "pattern": "/^DD\\s+(.+?)\\s+(?:PT|DI)\\d{6,}\\s*$/iu",
       "replacement": "$1",
       "post": ["collapse"],
       "tests": [
-        {"in": "DD SUNSETFITGYM   2010           PT81118656", "out": "SUNSETFITGYM 2010"},
+        {"in": "DD EXAMPLEGYM   2010           PT99000001", "out": "EXAMPLEGYM 2010"},
         {"in": "DD ACME 2024 PT12345678", "out": "ACME 2024"}
       ]
     },
@@ -80,8 +80,8 @@
       "pattern": "/^COMPRA\\s+\\d{3,5}\\s+(BOLT\\.EU)[A-Z]\\d{6,}\\s+(.+?)(?:\\s+CONTACTLESS)?\\s*$/i",
       "replacement": "$1 $2",
       "tests": [
-        {"in": "COMPRA 9800 BOLT.EUO2604111313 Tallinn EE", "out": "BOLT.EU Tallinn EE"},
-        {"in": "COMPRA 9800 BOLT.EUO2604111736 Tallinn EE", "out": "BOLT.EU Tallinn EE"}
+        {"in": "COMPRA 9800 BOLT.EUO1234567890 Tallinn EE", "out": "BOLT.EU Tallinn EE"},
+        {"in": "COMPRA 9800 BOLT.EUO1122334455 Tallinn EE", "out": "BOLT.EU Tallinn EE"}
       ]
     },
     {

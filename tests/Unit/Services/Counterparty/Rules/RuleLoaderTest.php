@@ -309,7 +309,7 @@ class RuleLoaderTest extends TestCase
                     'description' => 'Bolt embedded ID',
                     'pattern' => '/^Bolt\\.eu.*$/i',
                     'replacement' => 'Bolt.eu',
-                    'tests' => [['in' => 'Bolt.euo2604281114', 'out' => 'Bolt.eu']],
+                    'tests' => [['in' => 'Bolt.euo1234567890', 'out' => 'Bolt.eu']],
                 ],
             ],
         ]);

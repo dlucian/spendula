@@ -16,7 +16,7 @@ Architectural choices, alternatives considered, and the constraints that drove t
 
 **Constraints that drove the choice.**
 
-- Revolut writes the dirty merchant string directly into EB's structured `creditor.name` (e.g. `Bolt.euo2604281114`), so the rule engine has to be reachable from L0/L1 — there is no remittance to extract from.
+- Revolut writes the dirty merchant string directly into EB's structured `creditor.name` (e.g. `Bolt.euo1234567890`), so the rule engine has to be reachable from L0/L1 — there is no remittance to extract from.
 - The existing `rules` list semantics and tests are a recently shipped contract (PR #34, ING-RO PRs #32/#37). Layering a second list keeps that contract untouched.
 - The `Rule` type is a final readonly value class; adding a `target` discriminator would break its single-purpose shape.
 

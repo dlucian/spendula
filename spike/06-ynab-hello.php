@@ -30,9 +30,9 @@ foreach ($budgets as $b) {
     );
 }
 
-$spike = array_values(array_filter($budgets, fn($b) => $b['name'] === "Lucian's Plan"));
+$spike = array_values(array_filter($budgets, fn($b) => $b['name'] === "Spendula Test"));
 if (!$spike) {
-    fwrite(STDERR, "\nNo budget named \"Lucian's Plan\" found\n");
+    fwrite(STDERR, "\nNo budget named \"Spendula Test\" found\n");
     exit(1);
 }
 $budgetId = $spike[0]['id'];

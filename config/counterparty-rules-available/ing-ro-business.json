@@ -124,7 +124,7 @@
       "tests": [
         {"in": "Reference number, 6462372605, Ordering party, TEXTALK AB, From account, SE2850000000050598298428, Details, M1016, Value date, 05-05-2026, Message, qQHErjnTHBnavQ3A", "out": "TEXTALK AB"},
         {"in": "Reference number, 9419, Ordering party, EXAMPLE COMPANY  SRL, From account, RO49EXAMPLEEXAMPLE000003, Amount, 3.300,00 EUR, Rate, 5,01930", "out": "EXAMPLE COMPANY SRL"},
-        {"in": "Reference number, 7786822604, Ordering party, STRIPE, From account, NL41CITI2032304805, Details, STRIPE, Value date, 20-04-2026, Message, STRIPE-MDOL5YZAMN9Z7FJFBOZNUXWJ4CRN", "out": "STRIPE"}
+        {"in": "Reference number, 1234567890, Ordering party, STRIPE, From account, NL49CITI0000000001, Details, STRIPE, Value date, 20-04-2026, Message, STRIPE-EXAMPLEPAYOUTID1234567890ABCD", "out": "STRIPE"}
       ]
     },
     {
@@ -134,8 +134,8 @@
       "replacement": "BUGETUL DE STAT",
       "post": ["trim"],
       "tests": [
-        {"in": "Beneficiary, BUGETUL DE STAT/27263785, To account, RO82TREZ6215503XXXXXXXXX, Bank, TREZORERII, Details, impozit pe profit trim.1 2026, Reference number, 946664581", "out": "BUGETUL DE STAT"},
-        {"in": "Beneficiary, BUGETUL DE STAT/1831121350057, To account, RO07TREZ6215504XXXXXXXXX, Bank, TREZORERII, Details, 1831121350057, sume cf somatie nr.353010062555379, Reference number, 945518455", "out": "BUGETUL DE STAT"}
+        {"in": "Beneficiary, BUGETUL DE STAT/12345678, To account, RO82TREZ6215503XXXXXXXXX, Bank, TREZORERII, Details, impozit pe profit trim.1 2026, Reference number, 946664581", "out": "BUGETUL DE STAT"},
+        {"in": "Beneficiary, BUGETUL DE STAT/1234567890123, To account, RO07TREZ6215504XXXXXXXXX, Bank, TREZORERII, Details, 1234567890123, sume cf somatie nr.123456789012345, Reference number, 945518455", "out": "BUGETUL DE STAT"}
       ]
     },
     {
@@ -145,7 +145,7 @@
       "replacement": "$1",
       "post": ["trim", "collapse"],
       "tests": [
-        {"in": "Beneficiary, SC A.M. CLAR-CONT SRL, To account, RO49EXAMPLEEXAMPLE000001, Bank, ING BANK BUCURESTI CENTRALA, Details, cv fact AM5249 din 3 apr 2026, Reference number, 1775574105259925106351", "out": "SC A.M. CLAR-CONT SRL"},
+        {"in": "Beneficiary, EXAMPLE COMPANY SRL, To account, RO49EXAMPLEEXAMPLE000001, Bank, ING BANK BUCURESTI CENTRALA, Details, cv fact INV1234 din 1 apr 2026, Reference number, 1234567890123456789012", "out": "EXAMPLE COMPANY SRL"},
         {"in": "Beneficiary, BUGETUL DE STAT, To account, RO82TREZ6215503XXXXXXXXX, Bank, TREZORERII, Reference number, 999999999", "out": "BUGETUL DE STAT"}
       ]
     },

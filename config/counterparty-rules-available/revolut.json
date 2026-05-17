@@ -8,10 +8,10 @@
       "pattern": "/^Bolt\\.eu(?:o|\\/o\\/)\\d+\\s*$/i",
       "replacement": "Bolt.eu",
       "tests": [
-        {"in": "Bolt.euo2604281114", "out": "Bolt.eu"},
-        {"in": "Bolt.euo2604260246", "out": "Bolt.eu"},
-        {"in": "Bolt.euo2604181659", "out": "Bolt.eu"},
-        {"in": "Bolt.eu/o/2604030805", "out": "Bolt.eu"}
+        {"in": "Bolt.euo1234567890", "out": "Bolt.eu"},
+        {"in": "Bolt.euo1122334455", "out": "Bolt.eu"},
+        {"in": "Bolt.euo9988776655", "out": "Bolt.eu"},
+        {"in": "Bolt.eu/o/5544332211", "out": "Bolt.eu"}
       ]
     }
   ],
