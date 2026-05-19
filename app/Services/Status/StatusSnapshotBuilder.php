@@ -54,8 +54,9 @@ class StatusSnapshotBuilder
 
             $banks = $this->loadBanks($includeMock, $generatedAt);
             $stuck = $this->loadStuckTransactions($includeMock);
+            $recentErrors = $this->loadRecentErrors($includeMock, $generatedAt);
 
-            return $this->assemble($banks, $stuck, $generatedAt);
+            return $this->assemble($banks, $stuck, $recentErrors, $generatedAt);
         });
 
         return $snapshot;
@@ -410,8 +411,9 @@ class StatusSnapshotBuilder
     /**
      * @param  list<BankRow>  $banks
      * @param  list<StuckTransactionRow>  $stuck
+     * @param  list<RecentErrorRow>  $recentErrors
      */
-    private function assemble(array $banks, array $stuck, Carbon $generatedAt): StatusSnapshot
+    private function assemble(array $banks, array $stuck, array $recentErrors, Carbon $generatedAt): StatusSnapshot
     {
         $hasRedOrStuck = false;
         foreach ($banks as $b) {
@@ -440,6 +442,129 @@ class StatusSnapshotBuilder
             hasRedOrStuckRows: $hasRedOrStuck,
             isEmpty: $isEmpty,
             generatedAt: $generatedAt,
+            recentErrors: $recentErrors,
         );
+    }
+
+    /**
+     * Load up to RECENT_ERRORS_LIMIT rows from the union of sync_run_errors
+     * and push_run_errors created within RECENT_ERRORS_WINDOW_HOURS of
+     * generatedAt, ordered by created_at DESC.
+     *
+     * Sync errors may have bank_account_id = NULL when the failure was
+     * tied to a connection rather than a specific account (e.g. consent
+     * revoked); for those rows bankDisplayName/accountDisplayName are null
+     * and the renderer falls back to a dash.
+     *
+     * Mock-bank filtering mirrors the rest of the builder: rows tied to
+     * banks.slug = 'mock' are excluded when $includeMock is false.
+     *
+     * @return list<RecentErrorRow>
+     */
+    private function loadRecentErrors(bool $includeMock, Carbon $generatedAt): array
+    {
+        $cutoff = $generatedAt->copy()->subHours(Thresholds::RECENT_ERRORS_WINDOW_HOURS);
+
+        $syncQuery = DB::table('sync_run_errors as sre')
+            ->leftJoin('bank_accounts as ba', 'sre.bank_account_id', '=', 'ba.id')
+            ->leftJoin('banks as b', 'ba.bank_slug', '=', 'b.slug')
+            ->where('sre.created_at', '>=', $cutoff);
+
+        if (! $includeMock) {
+            $syncQuery->where(function ($q): void {
+                $q->whereNull('b.slug')->orWhere('b.slug', '!=', 'mock');
+            });
+        }
+
+        $syncRows = $syncQuery
+            ->orderByDesc('sre.created_at')
+            ->limit(Thresholds::RECENT_ERRORS_LIMIT)
+            ->select([
+                'sre.created_at as created_at',
+                'sre.sync_run_id as run_id',
+                'sre.http_status as http_status',
+                'sre.error_detail as error_detail',
+                'b.display_name as bank_display_name',
+                'ba.display_name as bank_account_display_name',
+                'ba.iban as bank_account_iban',
+            ])
+            ->get();
+
+        $pushQuery = DB::table('push_run_errors as pre')
+            ->leftJoin('transactions as t', 'pre.transaction_id', '=', 't.id')
+            ->leftJoin('bank_accounts as ba', 't.bank_account_id', '=', 'ba.id')
+            ->leftJoin('banks as b', 'ba.bank_slug', '=', 'b.slug')
+            ->where('pre.created_at', '>=', $cutoff);
+
+        if (! $includeMock) {
+            $pushQuery->where(function ($q): void {
+                $q->whereNull('b.slug')->orWhere('b.slug', '!=', 'mock');
+            });
+        }
+
+        $pushRows = $pushQuery
+            ->orderByDesc('pre.created_at')
+            ->limit(Thresholds::RECENT_ERRORS_LIMIT)
+            ->select([
+                'pre.created_at as created_at',
+                'pre.push_run_id as run_id',
+                'pre.http_status as http_status',
+                'pre.error_detail as error_detail',
+                'b.display_name as bank_display_name',
+                'ba.display_name as bank_account_display_name',
+                'ba.iban as bank_account_iban',
+            ])
+            ->get();
+
+        /** @var list<RecentErrorRow> $combined */
+        $combined = [];
+
+        foreach ($syncRows as $r) {
+            $combined[] = new RecentErrorRow(
+                createdAt: Carbon::parse((string) $r->created_at),
+                runKind: 'sync',
+                runId: (int) $r->run_id,
+                httpStatus: $r->http_status !== null ? (int) $r->http_status : null,
+                bankDisplayName: $r->bank_display_name !== null ? (string) $r->bank_display_name : null,
+                bankAccountDisplayName: $this->accountLabel($r),
+                detail: (string) $r->error_detail,
+            );
+        }
+
+        foreach ($pushRows as $r) {
+            $combined[] = new RecentErrorRow(
+                createdAt: Carbon::parse((string) $r->created_at),
+                runKind: 'push',
+                runId: (int) $r->run_id,
+                httpStatus: $r->http_status !== null ? (int) $r->http_status : null,
+                bankDisplayName: $r->bank_display_name !== null ? (string) $r->bank_display_name : null,
+                bankAccountDisplayName: $this->accountLabel($r),
+                detail: (string) $r->error_detail,
+            );
+        }
+
+        usort(
+            $combined,
+            fn (RecentErrorRow $a, RecentErrorRow $b): int => $b->createdAt <=> $a->createdAt,
+        );
+
+        return array_slice($combined, 0, Thresholds::RECENT_ERRORS_LIMIT);
+    }
+
+    /**
+     * Pick a human-readable label for an account row, preferring the
+     * display_name then the IBAN. Returns null when both are absent
+     * (sync errors with bank_account_id IS NULL).
+     */
+    private function accountLabel(object $row): ?string
+    {
+        if (property_exists($row, 'bank_account_display_name') && $row->bank_account_display_name !== null) {
+            return (string) $row->bank_account_display_name;
+        }
+        if (property_exists($row, 'bank_account_iban') && $row->bank_account_iban !== null) {
+            return (string) $row->bank_account_iban;
+        }
+
+        return null;
     }
 }

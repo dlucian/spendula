@@ -22,6 +22,7 @@ final class StatusSnapshot
     /**
      * @param  list<BankRow>  $banks
      * @param  list<StuckTransactionRow>  $stuckTransactions
+     * @param  list<RecentErrorRow>  $recentErrors
      */
     public function __construct(
         public readonly array $banks,
@@ -29,6 +30,7 @@ final class StatusSnapshot
         public readonly bool $hasRedOrStuckRows,
         public readonly bool $isEmpty,
         public readonly Carbon $generatedAt,
+        public readonly array $recentErrors = [],
     ) {}
 
     public function hasRedOrStuckRows(): bool
