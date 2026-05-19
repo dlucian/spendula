@@ -16,6 +16,7 @@ use App\Services\EnableBanking\Jwt;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -142,6 +143,50 @@ class SyncRunnerTest extends TestCase
 
         // sync_run_errors has exactly one rate_limit entry.
         $this->assertSame(1, SyncRun::query()->sole()->errors()->where('error_type', 'rate_limit')->count());
+    }
+
+    public function test_eb_error_body_is_persisted_to_sync_run_errors(): void
+    {
+        $this->seedConnectionWithAccount('uid-eur');
+
+        Http::fake([
+            'https://api.enablebanking.test/accounts/uid-eur/transactions*' => Http::response([
+                'code' => 'INVALID_DATE_FROM',
+                'message' => 'date_from must not be in the future',
+            ], 422),
+        ]);
+
+        $exit = Artisan::call('spendula:sync');
+        $out = Artisan::output();
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('Errors this run:', $out);
+        $this->assertStringContainsString('HTTP 422', $out);
+        $this->assertStringContainsString('INVALID_DATE_FROM', $out);
+
+        $error = SyncRun::query()->sole()->errors()->sole();
+        $this->assertSame(422, $error->http_status);
+        $detail = (string) $error->error_detail;
+        $this->assertStringStartsWith('Enable Banking returned HTTP 422', $detail);
+        $this->assertStringContainsString("\n\nResponse: ", $detail);
+        $this->assertStringContainsString('"code":"INVALID_DATE_FROM"', $detail);
+        $this->assertStringContainsString('"date_from must not be in the future"', $detail);
+    }
+
+    public function test_clean_sync_does_not_print_error_tail(): void
+    {
+        $this->seedConnectionWithAccount('uid-eur');
+
+        Http::fake([
+            'https://api.enablebanking.test/accounts/uid-eur/transactions*' => Http::response([
+                'transactions' => [$this->eurTransaction('ref-1')],
+                'continuation_key' => null,
+            ], 200),
+        ]);
+
+        $exit = Artisan::call('spendula:sync');
+        $out = Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringNotContainsString('Errors this run:', $out);
     }
 
     public function test_resumes_from_last_continuation_key(): void

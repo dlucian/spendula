@@ -3,6 +3,7 @@
 namespace Tests\Unit\Services\Status;
 
 use App\Services\Status\BankRow;
+use App\Services\Status\RecentErrorRow;
 use App\Services\Status\StatusRenderer;
 use App\Services\Status\StatusSnapshot;
 use App\Services\Status\StuckTransactionRow;
@@ -124,6 +125,97 @@ class StatusRendererTest extends TestCase
         $this->assertStringContainsString('attempts=6', $output);
         $this->assertStringContainsString('Acme', $output);
         $this->assertStringContainsString('YNAB 422: bad payload', $output);
+    }
+
+    public function test_recent_errors_panel_renders_when_rows_present(): void
+    {
+        $snapshot = new StatusSnapshot(
+            banks: [$this->bankRow()],
+            stuckTransactions: [],
+            hasRedOrStuckRows: false,
+            isEmpty: false,
+            generatedAt: Carbon::parse('2026-05-19 12:00:00'),
+            recentErrors: [
+                new RecentErrorRow(
+                    createdAt: Carbon::parse('2026-05-19 09:30:00'),
+                    runKind: 'sync',
+                    runId: 42,
+                    httpStatus: 422,
+                    bankDisplayName: 'Millennium BCP',
+                    bankAccountDisplayName: 'My Checking',
+                    detail: "Enable Banking returned HTTP 422 on GET /accounts/x/transactions.\n\nResponse: {\"code\":\"INVALID_DATE_FROM\"}",
+                ),
+                new RecentErrorRow(
+                    createdAt: Carbon::parse('2026-05-19 11:00:00'),
+                    runKind: 'push',
+                    runId: 7,
+                    httpStatus: 400,
+                    bankDisplayName: 'Millennium BCP',
+                    bankAccountDisplayName: 'My Checking',
+                    detail: 'YNAB returned HTTP 400 on POST /plans/y/transactions.',
+                ),
+            ],
+        );
+
+        $output = $this->capture($snapshot);
+
+        $this->assertStringContainsString('Recent sync/push errors', $output);
+        $this->assertStringContainsString('s#42', $output);
+        $this->assertStringContainsString('p#7', $output);
+        $this->assertStringContainsString('422', $output);
+        $this->assertStringContainsString('400', $output);
+        $this->assertStringContainsString('Millennium BCP / My Checking', $output);
+        // The "\n\nResponse: " marker is collapsed into a single-line " — Response: ".
+        $this->assertStringContainsString('— Response:', $output);
+        $this->assertStringNotContainsString("Response:\n", $output);
+    }
+
+    public function test_recent_errors_panel_omitted_when_empty(): void
+    {
+        $snapshot = new StatusSnapshot(
+            banks: [$this->bankRow()],
+            stuckTransactions: [],
+            hasRedOrStuckRows: false,
+            isEmpty: false,
+            generatedAt: Carbon::parse('2026-05-19 12:00:00'),
+            recentErrors: [],
+        );
+
+        $output = $this->capture($snapshot);
+
+        $this->assertStringNotContainsString('Recent sync/push errors', $output);
+    }
+
+    public function test_recent_errors_panel_falls_back_to_dash_for_connection_level_errors(): void
+    {
+        $snapshot = new StatusSnapshot(
+            banks: [$this->bankRow()],
+            stuckTransactions: [],
+            hasRedOrStuckRows: false,
+            isEmpty: false,
+            generatedAt: Carbon::parse('2026-05-19 12:00:00'),
+            recentErrors: [
+                new RecentErrorRow(
+                    createdAt: Carbon::parse('2026-05-19 09:30:00'),
+                    runKind: 'sync',
+                    runId: 1,
+                    httpStatus: 401,
+                    bankDisplayName: null,
+                    bankAccountDisplayName: null,
+                    detail: 'Enable Banking returned HTTP 401 — consent revoked.',
+                ),
+            ],
+        );
+
+        $output = $this->capture($snapshot);
+
+        $this->assertStringContainsString('Recent sync/push errors', $output);
+        // Bank/Account column shows a dash when both bank and account are null;
+        // it sits between the HTTP cell (`401`) and the Detail cell.
+        $this->assertMatchesRegularExpression(
+            '/401\s+-\s+Enable Banking returned HTTP 401/u',
+            $output,
+        );
     }
 
     public function test_renders_unknown_counterparty_placeholder(): void

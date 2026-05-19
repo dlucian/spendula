@@ -8,11 +8,13 @@ use App\Enums\YnabAccountType;
 use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\PushRun;
+use App\Models\PushRunError;
 use App\Models\Transaction;
 use App\Services\Sync\DedupHasher;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -210,7 +212,12 @@ class PushRunnerTest extends TestCase
             ], 400),
         ]);
 
-        $this->artisan('spendula:push')->assertFailed();
+        $exit = Artisan::call('spendula:push');
+        $out = Artisan::output();
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('Errors this run:', $out);
+        $this->assertStringContainsString('HTTP 400', $out);
+        $this->assertStringContainsString('account not found', $out);
 
         $tx = Transaction::query()->sole();
         $this->assertSame(TransactionStatus::Approved, $tx->status);
@@ -220,6 +227,36 @@ class PushRunnerTest extends TestCase
 
         $pushRun = PushRun::query()->sole();
         $this->assertSame(1, $pushRun->error_count);
+
+        $error = PushRunError::query()->sole();
+        $this->assertStringStartsWith('YNAB returned HTTP 400', (string) $error->error_detail);
+        $this->assertStringContainsString("\n\nResponse: ", (string) $error->error_detail);
+        $this->assertStringContainsString('"name":"bad_request"', (string) $error->error_detail);
+        $this->assertStringContainsString('"detail":"account not found"', (string) $error->error_detail);
+    }
+
+    public function test_clean_push_does_not_print_error_tail(): void
+    {
+        $this->seedApproved('ref-clean', -1000, 'Pingo Doce');
+
+        Http::fake([
+            'https://api.ynab.test/v1/plans/plan-under-test/transactions' => Http::response([
+                'data' => [
+                    'transactions' => [
+                        [
+                            'id' => 'ynab-1',
+                            'import_id' => $this->expectedImportId(Transaction::query()->sole()),
+                        ],
+                    ],
+                    'duplicate_import_ids' => [],
+                ],
+            ], 201),
+        ]);
+
+        $exit = Artisan::call('spendula:push');
+        $out = Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringNotContainsString('Errors this run:', $out);
     }
 
     private function seedApproved(string $entryRef, int $amountMilliunits, string $counterparty, TransactionStatus $status = TransactionStatus::Approved): Transaction

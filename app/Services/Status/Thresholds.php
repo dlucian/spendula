@@ -23,4 +23,10 @@ final class Thresholds
 
     /** A transaction at this attempt count or above counts as stuck. */
     public const int PUSH_STUCK_ATTEMPTS = 5;
+
+    /** Recent-errors panel window: sync/push errors newer than this are shown. */
+    public const int RECENT_ERRORS_WINDOW_HOURS = 24;
+
+    /** Recent-errors panel cap: at most this many rows are shown, newest first. */
+    public const int RECENT_ERRORS_LIMIT = 10;
 }

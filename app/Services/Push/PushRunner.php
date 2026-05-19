@@ -9,6 +9,7 @@ use App\Models\BankAccount;
 use App\Models\PushRun;
 use App\Models\PushRunError;
 use App\Models\Transaction;
+use App\Services\Errors\ErrorDetailFormatter;
 use App\Services\Locks\AdvisoryLock;
 use App\Services\Ynab\Client;
 use App\Services\Ynab\Exceptions\YnabAuthException;
@@ -273,7 +274,7 @@ class PushRunner
             'push_run_id' => $pushRun->id,
             'transaction_id' => $transaction?->id,
             'error_type' => $type,
-            'error_detail' => substr($e->getMessage(), 0, 1000),
+            'error_detail' => ErrorDetailFormatter::format($e),
             'http_status' => $e instanceof YnabException ? $e->httpStatus : null,
         ]);
     }

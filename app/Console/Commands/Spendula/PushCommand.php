@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Spendula;
 
+use App\Models\PushRunError;
 use App\Services\Locks\LockBusyException;
 use App\Services\Push\PushRunner;
 use App\Services\Ynab\Exceptions\YnabAuthException;
@@ -43,6 +44,68 @@ class PushCommand extends Command
             $result->errors,
         ));
 
+        if ($result->errors > 0) {
+            $this->printErrorTail($result->run->id);
+        }
+
         return $result->errors > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    /**
+     * Print each push_run_errors row from this run as one line, so the operator
+     * doesn't have to chain `spendula:status` or query the DB to see what
+     * failed. Format matches the renderer's RECENT_DETAIL_TRUNCATE shape.
+     */
+    private function printErrorTail(int $pushRunId): void
+    {
+        $errors = PushRunError::query()
+            ->with('transaction.bankAccount.bank')
+            ->where('push_run_id', $pushRunId)
+            ->orderBy('created_at')
+            ->get();
+
+        if ($errors->isEmpty()) {
+            return;
+        }
+
+        $this->line('Errors this run:');
+        foreach ($errors as $err) {
+            $bankAccount = $err->transaction?->bankAccount;
+            $bankName = $bankAccount?->bank?->display_name;
+            $accountName = $bankAccount !== null
+                ? ($bankAccount->display_name ?? $bankAccount->iban)
+                : null;
+
+            if ($bankName === null && $accountName === null) {
+                $label = '-';
+            } elseif ($bankName !== null && $accountName !== null) {
+                $label = $bankName.' / '.$accountName;
+            } else {
+                $label = (string) ($bankName ?? $accountName);
+            }
+
+            $http = $err->http_status !== null ? (string) $err->http_status : '-';
+            $detail = $this->collapseDetail($err->error_detail);
+
+            $this->line(sprintf(
+                '  <fg=red>•</> [%s] HTTP %s  %s  %s',
+                $err->error_type->value,
+                $http,
+                $label,
+                $detail,
+            ));
+        }
+    }
+
+    private function collapseDetail(string $s): string
+    {
+        $s = str_replace("\n\nResponse: ", ' — Response: ', $s);
+        $s = str_replace(["\r", "\n"], ' ', $s);
+
+        if (mb_strlen($s) <= 200) {
+            return $s;
+        }
+
+        return mb_substr($s, 0, 199).'…';
     }
 }

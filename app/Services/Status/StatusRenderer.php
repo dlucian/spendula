@@ -16,6 +16,8 @@ class StatusRenderer
 {
     private const int LAST_ERROR_TRUNCATE = 80;
 
+    private const int RECENT_DETAIL_TRUNCATE = 120;
+
     public function render(StatusSnapshot $snapshot, OutputStyle $output): void
     {
         if ($snapshot->isEmpty) {
@@ -31,6 +33,11 @@ class StatusRenderer
         $this->renderQueuedCounts($snapshot, $output);
         $output->writeln('');
         $this->renderWallTimes($snapshot, $output);
+
+        if ($snapshot->recentErrors !== []) {
+            $output->writeln('');
+            $this->renderRecentErrors($snapshot, $output);
+        }
 
         if ($snapshot->stuckTransactions !== []) {
             $output->writeln('');
@@ -140,6 +147,60 @@ class StatusRenderer
             ['Bank', 'Last sync', 'Last push', 'Last snapshot'],
             $rows,
         );
+    }
+
+    private function renderRecentErrors(StatusSnapshot $snapshot, OutputStyle $output): void
+    {
+        $output->writeln(sprintf(
+            '<options=bold>Recent sync/push errors (last %dh)</>',
+            Thresholds::RECENT_ERRORS_WINDOW_HOURS,
+        ));
+
+        $rows = [];
+        foreach ($snapshot->recentErrors as $e) {
+            $bankAcct = $this->formatBankAccount($e->bankDisplayName, $e->bankAccountDisplayName);
+            $rows[] = [
+                'when' => $e->createdAt->format('Y-m-d H:i'),
+                'run' => sprintf('%s#%d', $e->runKind === 'sync' ? 's' : 'p', $e->runId),
+                'http' => $e->httpStatus !== null ? (string) $e->httpStatus : '-',
+                'bank_account' => $bankAcct,
+                'detail' => $this->truncateRecentDetail($e->detail),
+            ];
+        }
+
+        $output->table(
+            ['When', 'Run', 'HTTP', 'Bank/Account', 'Detail'],
+            $rows,
+        );
+    }
+
+    private function formatBankAccount(?string $bank, ?string $account): string
+    {
+        if ($bank === null && $account === null) {
+            return '-';
+        }
+
+        if ($bank !== null && $account !== null) {
+            return $bank.' / '.$account;
+        }
+
+        // Exactly one of the two is non-null at this point — the (null, null)
+        // case was handled above.
+        return $bank ?? (string) $account;
+    }
+
+    private function truncateRecentDetail(string $s): string
+    {
+        // Recent-errors panel collapses the "\n\nResponse: " marker into " — "
+        // so the multi-line error_detail fits on one row in the table.
+        $s = str_replace("\n\nResponse: ", ' — Response: ', $s);
+        $s = str_replace(["\r", "\n"], ' ', $s);
+
+        if (mb_strlen($s) <= self::RECENT_DETAIL_TRUNCATE) {
+            return $s;
+        }
+
+        return mb_substr($s, 0, self::RECENT_DETAIL_TRUNCATE - 1).'…';
     }
 
     private function renderStuck(StatusSnapshot $snapshot, OutputStyle $output): void

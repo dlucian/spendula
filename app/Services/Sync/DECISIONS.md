@@ -2,6 +2,32 @@
 
 Decisions specific to the sync subsystem. Repo-wide decisions live in `SUMMARY.md`.
 
+## 2026-05-19 — `sync_run_errors.error_detail` carries the EB response body (GH #2)
+
+`SyncRunner::logError` used to persist only `substr($e->getMessage(), 0, 1000)`,
+even though `EnableBankingException::$body` already carried the parsed
+JSON envelope from upstream. Diagnosing prod failures meant SSH-and-query
+to read `raw_payload`, then guess.
+
+Now both `SyncRunner` and `PushRunner` route through
+`App\Services\Errors\ErrorDetailFormatter`. The persisted string is the
+existing exception message (grep-compatible prefix), then a blank line,
+then `Response: <json-encoded body>`. The 1000-char cap still applies
+but truncation lands AFTER appending — the prefix is never lost.
+
+**Alternatives considered.** A new structured `error_body` jsonb column.
+Rejected: requires a migration, doubles the storage surface, and the
+freeform `error_detail` field is already sized for the use case. If a
+future panel needs structured field access (e.g. group-by error code),
+we can land the column then.
+
+**Consequences.** `error_detail` now exceeds the bare prefix length on
+HTTP errors with a non-null EB body. Anything that grep-matched the
+prefix still works. `spendula:status` and a new inline error tail on
+`spendula:sync` / `spendula:push` consume the same field and collapse
+the embedded `\n\nResponse: ` marker into a single-line ` — Response: `
+for display.
+
 ## 2026-04-30 — Cutoff precedes the tracking-status branch (phase 3b)
 
 `MatchUpdateOrInsert::insert()` checks `import_cutoff_date` first, then
