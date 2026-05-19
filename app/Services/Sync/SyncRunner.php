@@ -17,6 +17,7 @@ use App\Services\EnableBanking\Exceptions\EnableBankingException;
 use App\Services\EnableBanking\Exceptions\EnableBankingRateLimitException;
 use App\Services\EnableBanking\Exceptions\EnableBankingRevokedException;
 use App\Services\EnableBanking\Exceptions\EnableBankingServerException;
+use App\Services\Errors\ErrorDetailFormatter;
 use App\Services\Locks\AdvisoryLock;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -456,7 +457,7 @@ class SyncRunner
             'sync_run_id' => $syncRun->id,
             'bank_account_id' => $account?->id,
             'error_type' => $type,
-            'error_detail' => substr($e->getMessage(), 0, 1000),
+            'error_detail' => ErrorDetailFormatter::format($e),
             'http_status' => $httpStatus,
         ]);
     }

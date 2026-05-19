@@ -144,6 +144,28 @@ class SyncRunnerTest extends TestCase
         $this->assertSame(1, SyncRun::query()->sole()->errors()->where('error_type', 'rate_limit')->count());
     }
 
+    public function test_eb_error_body_is_persisted_to_sync_run_errors(): void
+    {
+        $this->seedConnectionWithAccount('uid-eur');
+
+        Http::fake([
+            'https://api.enablebanking.test/accounts/uid-eur/transactions*' => Http::response([
+                'code' => 'INVALID_DATE_FROM',
+                'message' => 'date_from must not be in the future',
+            ], 422),
+        ]);
+
+        $this->artisan('spendula:sync')->assertFailed();
+
+        $error = SyncRun::query()->sole()->errors()->sole();
+        $this->assertSame(422, $error->http_status);
+        $detail = (string) $error->error_detail;
+        $this->assertStringStartsWith('Enable Banking returned HTTP 422', $detail);
+        $this->assertStringContainsString("\n\nResponse: ", $detail);
+        $this->assertStringContainsString('"code":"INVALID_DATE_FROM"', $detail);
+        $this->assertStringContainsString('"date_from must not be in the future"', $detail);
+    }
+
     public function test_resumes_from_last_continuation_key(): void
     {
         $account = $this->seedConnectionWithAccount('uid-eur');

@@ -8,6 +8,7 @@ use App\Enums\YnabAccountType;
 use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\PushRun;
+use App\Models\PushRunError;
 use App\Models\Transaction;
 use App\Services\Sync\DedupHasher;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -220,6 +221,12 @@ class PushRunnerTest extends TestCase
 
         $pushRun = PushRun::query()->sole();
         $this->assertSame(1, $pushRun->error_count);
+
+        $error = PushRunError::query()->sole();
+        $this->assertStringStartsWith('YNAB returned HTTP 400', (string) $error->error_detail);
+        $this->assertStringContainsString("\n\nResponse: ", (string) $error->error_detail);
+        $this->assertStringContainsString('"name":"bad_request"', (string) $error->error_detail);
+        $this->assertStringContainsString('"detail":"account not found"', (string) $error->error_detail);
     }
 
     private function seedApproved(string $entryRef, int $amountMilliunits, string $counterparty, TransactionStatus $status = TransactionStatus::Approved): Transaction
