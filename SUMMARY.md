@@ -1,5 +1,41 @@
 # Latest task summary
 
+## Surface EB/YNAB error bodies (GH #2)
+
+### What changed
+
+- `app/Services/Errors/ErrorDetailFormatter.php` (new) — shared helper that builds the string persisted into `sync_run_errors.error_detail` and `push_run_errors.error_detail`. Output is the existing exception message followed by `\n\nResponse: <json>` when the exception carries a non-null `body`. Truncation at 1000 chars happens AFTER appending so the prefix is preserved.
+- `app/Services/Sync/SyncRunner.php:logError` and `app/Services/Push/PushRunner.php:logError` — now call the formatter instead of a naked `substr($e->getMessage(), 0, 1000)`. No schema change: `error_detail` is already `text`.
+- `app/Services/Status/RecentErrorRow.php` (new) — DTO carrying one row in the new "Recent sync/push errors" panel.
+- `app/Services/Status/StatusSnapshot.php` — adds `recentErrors` field (defaulted to `[]` so existing call sites in tests continue to compile).
+- `app/Services/Status/StatusSnapshotBuilder.php` — adds `loadRecentErrors()` inside the existing `REPEATABLE READ READ ONLY` transaction; joins `sync_run_errors` / `push_run_errors` to `bank_accounts → banks`, applies the same mock-bank filter as the rest of the builder, caps at `Thresholds::RECENT_ERRORS_LIMIT` rows within `Thresholds::RECENT_ERRORS_WINDOW_HOURS`.
+- `app/Services/Status/Thresholds.php` — adds `RECENT_ERRORS_WINDOW_HOURS = 24` and `RECENT_ERRORS_LIMIT = 10`. The 24h window mirrors `SYNC_STALE_HOURS` so the dashboard has one freshness constant.
+- `app/Services/Status/StatusRenderer.php` — adds `renderRecentErrors()`, suppressed when the snapshot's `recentErrors` is empty. The renderer collapses the `\n\nResponse: ` marker into ` — Response: ` so multi-line `error_detail` strings fit on one row; truncates the cell at 120 chars.
+- `app/Console/Commands/Spendula/SyncCommand.php` and `PushCommand.php` — when `result->errors > 0`, print one line per error from the run after the summary line. Same single-line shape as the renderer panel.
+- Tests: new `tests/Unit/Services/Errors/ErrorDetailFormatterTest.php` (8 cases). `tests/Unit/Services/Status/StatusSnapshotBuilderTest.php` gains 5 cases for the panel (window, cap, mock-filter, null-account fallback, basic load). `tests/Unit/Services/Status/StatusRendererTest.php` gains 3 cases. `tests/Feature/Services/Sync/SyncRunnerTest.php` + `tests/Feature/Services/Push/PushRunnerTest.php` extended to verify the persisted body lands in `error_detail` AND that the inline command-error-tail is printed only on failure (via `Artisan::call/output`).
+- `app/Services/Sync/DECISIONS.md` — new entry documenting the `error_detail` format change (prefix preserved, body appended, truncate after append).
+
+### Assumptions made
+
+- `EnableBankingException::$body` and `YnabException::$body` are already populated by `Client.php:safeJson($response)` on the EB side and `Client.php:safeJson($response)` on the YNAB side. The formatter consumes whatever they store; if EB / YNAB ever change response shapes, the DB just stores the new shape verbatim.
+- The existing 1000-char `substr` cap is intentional and matches `error_detail` column widths used in psql output. Kept rather than raised.
+- Stored rows that landed before this change continue to display just their original prefix (no retroactive backfill). New rows from this point forward carry the body.
+- Tests assume `Artisan::call('spendula:sync' | 'spendula:push')` captures `$this->line()` output via `Artisan::output()` — verified.
+
+### Blast radius
+
+- `sync_run_errors.error_detail` and `push_run_errors.error_detail` text contents change shape (longer when an upstream body is available). Any downstream consumer that pattern-matches the literal exception message as a prefix continues to match — only the suffix is new.
+- `StatusSnapshot` adds an optional constructor field. Defaults to `[]`; existing tests/callers that don't pass it keep working.
+- `spendula:status` output gains one new panel between "Last activity" and "Push-stuck transactions". `--include-mock` honored. Exit code unchanged (the panel is informational only — it does not feed `hasRedOrStuckRows`).
+- `spendula:sync` / `spendula:push` printed output gains a per-error tail when `errors > 0`. Exit codes unchanged; clean runs unchanged.
+
+### Open threads
+
+- The renderer's 120-char detail truncation is tuned for one operator terminal width. If the EB / YNAB envelopes ever start exceeding that and the trailing `…` becomes useless, either bump the cap or layer structured columns (out of scope here).
+- The Revolut RON HTTP 400 from the 2026-05-18 incident is still unresolved as of this PR. Once merged and deployed, the next `spendula:sync` failure for that account will persist the EB body and we can diagnose without instrumentation.
+
+---
+
 ## Sync PDNG-filter field-name fix (GH #46)
 
 ### What changed
