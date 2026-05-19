@@ -434,7 +434,11 @@ class StatusSnapshotBuilder
             $hasRedOrStuck = true;
         }
 
-        $isEmpty = $banks === [] && $stuck === [];
+        // Recent errors keep the snapshot non-empty even when there are no
+        // active banks or stuck rows — otherwise StatusRenderer's
+        // "Nothing to show" early-return would suppress the panel that's
+        // the whole reason this work exists.
+        $isEmpty = $banks === [] && $stuck === [] && $recentErrors === [];
 
         return new StatusSnapshot(
             banks: $banks,
@@ -465,14 +469,28 @@ class StatusSnapshotBuilder
     {
         $cutoff = $generatedAt->copy()->subHours(Thresholds::RECENT_ERRORS_WINDOW_HOURS);
 
+        // Connection-level sync errors have bank_account_id IS NULL, so the
+        // bank_accounts → banks join can't be the only source of truth for
+        // the mock filter — we'd otherwise leak mock-bank errors through
+        // when `includeMock=false`. sync_runs.bank_slug is denormalised onto
+        // the run row and gives us a fallback bank attribution.
         $syncQuery = DB::table('sync_run_errors as sre')
             ->leftJoin('bank_accounts as ba', 'sre.bank_account_id', '=', 'ba.id')
             ->leftJoin('banks as b', 'ba.bank_slug', '=', 'b.slug')
+            ->leftJoin('sync_runs as sr', 'sre.sync_run_id', '=', 'sr.id')
             ->where('sre.created_at', '>=', $cutoff);
 
         if (! $includeMock) {
+            // A row is "mock" if either the joined account's bank or the
+            // run's denormalised bank_slug is 'mock'. Everything else
+            // (including rows where both are null, which shouldn't happen
+            // but is defensive) passes through.
             $syncQuery->where(function ($q): void {
-                $q->whereNull('b.slug')->orWhere('b.slug', '!=', 'mock');
+                $q->where(function ($inner): void {
+                    $inner->whereNull('b.slug')->orWhere('b.slug', '!=', 'mock');
+                })->where(function ($inner): void {
+                    $inner->whereNull('sr.bank_slug')->orWhere('sr.bank_slug', '!=', 'mock');
+                });
             });
         }
 

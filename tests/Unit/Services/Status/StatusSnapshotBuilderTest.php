@@ -340,6 +340,52 @@ class StatusSnapshotBuilderTest extends TestCase
         $this->assertNull($snapshot->recentErrors[0]->bankAccountDisplayName);
     }
 
+    public function test_recent_errors_excludes_mock_connection_level_errors_via_sync_run_bank_slug(): void
+    {
+        // A sync error tied to a mock-bank run but with bank_account_id = NULL
+        // (consent-level failure) joins through bank_accounts → banks as
+        // (null, null). Without the sync_runs.bank_slug fallback the mock
+        // filter would leak this row through when includeMock=false.
+        $this->seedBank('mock', 'Mock ASPSP');
+        $this->seedBank('bcp', 'BCP');
+        $this->seedConnection('mock', BankConnectionStatus::Active);
+        $this->seedConnection('bcp', BankConnectionStatus::Active);
+        $realAccount = $this->seedAccount('bcp');
+
+        $mockSyncRun = $this->seedSyncRun('mock');
+        $this->seedSyncRunError($mockSyncRun, null, 'consent_expired', 'mock-connection-err', Carbon::now()->subMinutes(5), 401);
+
+        $bcpSyncRun = $this->seedSyncRun('bcp');
+        $this->seedSyncRunError($bcpSyncRun, $realAccount, 'http_error', 'real-err', Carbon::now()->subMinutes(10), 422);
+
+        $excluded = (new StatusSnapshotBuilder)->build(includeMock: false);
+        $details = array_map(fn ($e) => $e->detail, $excluded->recentErrors);
+        $this->assertContains('real-err', $details);
+        $this->assertNotContains('mock-connection-err', $details, 'mock connection-level error must be filtered by sync_runs.bank_slug');
+
+        $included = (new StatusSnapshotBuilder)->build(includeMock: true);
+        $detailsIncluded = array_map(fn ($e) => $e->detail, $included->recentErrors);
+        $this->assertContains('mock-connection-err', $detailsIncluded);
+    }
+
+    public function test_snapshot_with_only_recent_errors_is_not_empty(): void
+    {
+        // No active banks, no stuck transactions, but a recent error exists.
+        // The "Nothing to show" early-return in StatusRenderer keys off
+        // isEmpty, so recent errors must keep isEmpty=false or the panel
+        // gets suppressed exactly when it matters most.
+        $this->seedBank('bcp', 'BCP', active: false);
+        $this->seedConnection('bcp', BankConnectionStatus::Active);
+        $account = $this->seedAccount('bcp');
+        $syncRun = $this->seedSyncRun('bcp');
+        $this->seedSyncRunError($syncRun, $account, 'http_error', 'lonely-err', Carbon::now()->subMinutes(5), 422);
+
+        $snapshot = (new StatusSnapshotBuilder)->build(includeMock: false);
+
+        $this->assertFalse($snapshot->isEmpty);
+        $this->assertCount(1, $snapshot->recentErrors);
+    }
+
     private function seedBank(string $slug, string $displayName, bool $active = true): Bank
     {
         return Bank::query()->create([

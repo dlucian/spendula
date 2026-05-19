@@ -36,7 +36,7 @@ final class ErrorDetailFormatter
         $body = self::bodyFor($e);
 
         if ($body === null || $body === []) {
-            return substr($message, 0, self::MAX_LEN);
+            return self::truncate($message);
         }
 
         $encoded = json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -45,10 +45,31 @@ final class ErrorDetailFormatter
             // json_encode failed (e.g. recursive structure that shouldn't be
             // possible from an HTTP-decoded array). Fall back to just the
             // message rather than throwing — diagnostics are best-effort.
-            return substr($message, 0, self::MAX_LEN);
+            return self::truncate($message);
         }
 
-        return substr($message."\n\nResponse: ".$encoded, 0, self::MAX_LEN);
+        return self::truncate($message."\n\nResponse: ".$encoded);
+    }
+
+    /**
+     * Truncate to MAX_LEN bytes on a valid UTF-8 boundary.
+     *
+     * The error_detail columns are Postgres `text` (UTF-8). With
+     * JSON_UNESCAPED_UNICODE the upstream body can contain multibyte
+     * codepoints (e.g. counterparty names with diacritics); a naive
+     * byte-based `substr` could land mid-codepoint and produce invalid
+     * UTF-8 that Postgres rejects on insert — turning a logged error
+     * into an aborted run. `mb_strcut` honours codepoint boundaries
+     * while keeping the cap in bytes, which is what the column budget
+     * is measured in.
+     */
+    private static function truncate(string $s): string
+    {
+        if (strlen($s) <= self::MAX_LEN) {
+            return $s;
+        }
+
+        return mb_strcut($s, 0, self::MAX_LEN, 'UTF-8');
     }
 
     /**

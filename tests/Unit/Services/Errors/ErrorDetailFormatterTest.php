@@ -98,4 +98,21 @@ class ErrorDetailFormatterTest extends TestCase
         $this->assertSame(ErrorDetailFormatter::MAX_LEN, strlen($out));
         $this->assertSame(str_repeat('M', ErrorDetailFormatter::MAX_LEN), $out);
     }
+
+    public function test_multibyte_body_truncated_on_codepoint_boundary(): void
+    {
+        // A 3-byte UTF-8 codepoint ('€' = E2 82 AC) padded out so the
+        // truncation cut would fall mid-codepoint if `substr` were used.
+        // mb_strcut must back off to a valid boundary so the resulting
+        // string stays valid UTF-8 (which Postgres `text` requires).
+        $body = ['merchant' => str_repeat('€', 500)];
+        $e = new EnableBankingHttpException('m', 400, $body);
+
+        $out = ErrorDetailFormatter::format($e);
+
+        $this->assertLessThanOrEqual(ErrorDetailFormatter::MAX_LEN, strlen($out));
+        // mb_check_encoding rejects malformed UTF-8; the substr path would
+        // have failed this on a truncation that landed inside '€'.
+        $this->assertTrue(mb_check_encoding($out, 'UTF-8'), 'Truncated detail must be valid UTF-8.');
+    }
 }
