@@ -49,6 +49,45 @@
 - No separate "Rule updated:" output line for `--force` overwrites — single
   `Rule added:` format kept for script-consumer simplicity.
 
+---
+
+## spendula:accounts:deactivate command + inactive-account invariant (GH #4)
+
+### What changed
+
+- `app/Console/Commands/Spendula/AccountsDeactivateCommand.php` (new) — new artisan command `spendula:accounts:deactivate --id=<uuid> [--force]`. Validates UUID before any DB query, refuses already-inactive accounts and unpushed-without-force, prompts with account summary table, executes a conditional `UPDATE bank_accounts SET active=false WHERE id=? AND active=true` inside `DB::transaction`. Interactive picker (TTY only) lists active accounts with full-UUID labels for collision safety. Comprehensive docblock per CLAUDE.md §"Behavioural contracts".
+- `app/Services/Push/PushRunner.php` — added `->where('active', true)` to the inner subquery that builds the candidate bank-account-id set. Inactive accounts' approved/transfer rows are now excluded from YNAB push.
+- `app/Services/Status/StatusSnapshotBuilder.php` — added `->where('bank_accounts.active', true)` to `loadQueuedCounts` and `->where('bank_accounts.active', true)` to `loadStuckTransactions`. Deactivated accounts' rows no longer inflate queued counts or appear in the stuck-transactions panel.
+- `tests/Feature/Commands/Spendula/AccountsDeactivateCommandTest.php` (new) — 13 tests covering scripted path, UUID validation, already-inactive refusal, unpushed-guard, --force, sibling-table immutability, confirmation-declined, interactive picker with active-only filter, full-UUID uniqueness, cancel, no-active-accounts, and --no-interaction guard.
+- `tests/Feature/Push/PushRunnerInactiveAccountTest.php` (new) — 2 tests: inactive account's rows not pushed, active sibling in same run still pushes.
+- `tests/Feature/Status/StatusSnapshotBuilderInactiveAccountTest.php` (new) — 2 tests: queued counts exclude inactive accounts, stuck transactions exclude inactive accounts.
+- `docs/SPEC.md` — added `spendula:accounts:deactivate` to the command list and advisory-lock carve-outs; noted the inactive-account exclusion in PushRunner/status semantics.
+- `README.md` — added command-table row and updated feature list entries 13 and 16.
+
+### Assumptions made
+
+- `bank_accounts.active` is the single quarantine lever for sync/push/status (re-verified at `SyncRunner.php:155`, `PushRunner.php:67`, `StatusSnapshotBuilder.php:201 & 283`); `SyncRunner` already filtered on `active` at line 155.
+- `TransactionStatus::Approved` and `Transfer` are the only "unpushed but operator-decided" statuses; `Fetched` is pre-review and excluded from the unpushed count intentionally.
+- Sibling tables (`bank_account_sessions`, `bank_account_sync_state`, `bank_account_identifiers`, `transactions`) are safe to leave behind — no `ON DELETE` cascades fire from a `bank_accounts.active` flip (it is not a delete). Rows survive for audit and reversibility.
+- The Postgres session timezone was UTC during the run (per `config/database.php`).
+- YNAB API responses in the PushRunner inactive-account tests were faked using `Http::fake()` with a computed `DedupHasher::importId`; no live YNAB calls were made.
+
+### Blast radius
+
+- `PushRunner`: existing tests that seed `active=true` accounts are unaffected. Existing `test_tracking_accounts_are_skipped` test uses a tracking-type account (not inactive) — unaffected.
+- `StatusSnapshotBuilder::loadQueuedCounts` and `::loadStuckTransactions`: existing tests that seed accounts with `active=true` (default) are unaffected. Existing `test_has_red_or_stuck_rows_true_when_stuck_transaction_present` uses `active=true` — verified still passing.
+- `SyncRunner` (line 155): already filters on `active` — no change needed, no blast radius.
+- `spendula:accounts:map` candidate query (`->where('active', true)`, unchanged) — unaffected.
+- Other consumers of `bank_accounts` (`MatchUpdateOrInsert`, `PayeeRuleEngine` eager loads) operate on already-fetched rows, not on an `active=true` invariant — unaffected.
+
+### Open threads
+
+- `spendula:accounts:reactivate` deferred; one-line SQL `UPDATE bank_accounts SET active=true WHERE id=?` is the manual path today.
+- A connection whose every mapped account is inactive still produces `accountsAttempted = 0`, so `SyncRunner` line 224's `last_synced_at` stamp never fires and `spendula:status` continues to show the connection as stale. The practical case (the Revolut RON fix) has an active EUR sibling, so the stamp fires correctly. Documented as a known follow-up in the command docblock.
+- Race against an in-flight `spendula:push` that has already loaded its candidate set: one push run may still POST an inactive account's rows. Subsequent runs honour the invariant. Documented in the command docblock.
+
+---
+
 ## Surface EB/YNAB error bodies (GH #2)
 
 ### What changed

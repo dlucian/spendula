@@ -200,6 +200,8 @@ class StatusSnapshotBuilder
         $rows = DB::table('transactions')
             ->join('bank_accounts', 'transactions.bank_account_id', '=', 'bank_accounts.id')
             ->whereIn('bank_accounts.bank_slug', $slugs)
+            // Deactivated bank accounts are operator-quarantined; their queued rows are dead and must not inflate the per-bank queued counts.
+            ->where('bank_accounts.active', true)
             ->whereIn('transactions.status', $statuses)
             ->groupBy('bank_accounts.bank_slug', 'transactions.status')
             ->select([
@@ -283,6 +285,8 @@ class StatusSnapshotBuilder
             ->join('bank_accounts', 'transactions.bank_account_id', '=', 'bank_accounts.id')
             ->join('banks', 'bank_accounts.bank_slug', '=', 'banks.slug')
             ->where('banks.active', true)
+            // As above: dead rows on a deactivated account must not surface in the stuck panel.
+            ->where('bank_accounts.active', true)
             ->where('transactions.push_attempt_count', '>=', Thresholds::PUSH_STUCK_ATTEMPTS)
             ->whereIn('transactions.status', [
                 TransactionStatus::Approved->value,

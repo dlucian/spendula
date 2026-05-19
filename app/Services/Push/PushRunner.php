@@ -67,6 +67,8 @@ class PushRunner
             ->whereIn('bank_account_id', BankAccount::query()
                 ->where('ynab_account_type', YnabAccountType::OnBudget->value)
                 ->whereNotNull('ynab_account_id')
+                // Inactive accounts are quarantined from YNAB push by design; see AccountsDeactivateCommand docblock for the invariant.
+                ->where('active', true)
                 ->select('id'))
             ->orderBy('bank_account_id')
             ->orderBy('booking_date')

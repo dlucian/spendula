@@ -92,6 +92,7 @@ Spendula exposes one HTTP route (the OAuth callback) and a set of artisan comman
 - `spendula:banks:add` — insert an operator bank into the `banks` table directly. Operator banks never appear in source. — **real in phase 2**
 - `spendula:auth:start {bank_slug}` — generate a consent URL for a bank — **real in phase 1**
 - `spendula:accounts:map` — interactive mapping of bank accounts to YNAB accounts — **real in phase 2**
+- `spendula:accounts:deactivate --id=<uuid> [--force]` — flip `bank_accounts.active = false` so sync stops attempting it, push stops sending its rows, and status stops surfacing them. Reversible. Inactive bank accounts (`bank_accounts.active = false`) are excluded from `PushRunner`'s candidate-row set and from `spendula:status`'s queued counts and stuck-transactions panel. — **real in phase 2+**
 - `spendula:sync [--bank=slug]` — fetch new transactions — **real in phase 1** (on-budget flow only; tracking-account path is phase-2)
 - `spendula:review` — interactive CLI queue for Approve/Skip/Transfer — **real in phase 1**
 - `spendula:push` — push approved transactions to YNAB — **real in phase 1**
@@ -101,7 +102,7 @@ Spendula exposes one HTTP route (the OAuth callback) and a set of artisan comman
 
 All stubs exist from phase 1 onward so the command surface is stable; callers and docs don't need to change when stubs become real.
 
-Every real command acquires an **advisory lock** (`pg_try_advisory_lock` with a command-specific key) before doing work. Concurrent invocations exit immediately with a message rather than racing. (Carve-outs: `spendula:accounts:map` is idempotent UPDATE-LAST-WINS and does not require a lock; `spendula:status` is read-only and takes no lock.)
+Every real command acquires an **advisory lock** (`pg_try_advisory_lock` with a command-specific key) before doing work. Concurrent invocations exit immediately with a message rather than racing. (Carve-outs: `spendula:accounts:map` and `spendula:accounts:deactivate` are idempotent UPDATE-LAST-WINS and do not require a lock; `spendula:status` is read-only and takes no lock.)
 
 ### 3.3 Data flow (happy path, on-budget account)
 
