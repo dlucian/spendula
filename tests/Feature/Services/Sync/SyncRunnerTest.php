@@ -155,7 +155,12 @@ class SyncRunnerTest extends TestCase
             ], 422),
         ]);
 
-        $this->artisan('spendula:sync')->assertFailed();
+        $exit = \Illuminate\Support\Facades\Artisan::call('spendula:sync');
+        $out = \Illuminate\Support\Facades\Artisan::output();
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('Errors this run:', $out);
+        $this->assertStringContainsString('HTTP 422', $out);
+        $this->assertStringContainsString('INVALID_DATE_FROM', $out);
 
         $error = SyncRun::query()->sole()->errors()->sole();
         $this->assertSame(422, $error->http_status);
@@ -164,6 +169,23 @@ class SyncRunnerTest extends TestCase
         $this->assertStringContainsString("\n\nResponse: ", $detail);
         $this->assertStringContainsString('"code":"INVALID_DATE_FROM"', $detail);
         $this->assertStringContainsString('"date_from must not be in the future"', $detail);
+    }
+
+    public function test_clean_sync_does_not_print_error_tail(): void
+    {
+        $this->seedConnectionWithAccount('uid-eur');
+
+        Http::fake([
+            'https://api.enablebanking.test/accounts/uid-eur/transactions*' => Http::response([
+                'transactions' => [$this->eurTransaction('ref-1')],
+                'continuation_key' => null,
+            ], 200),
+        ]);
+
+        $exit = \Illuminate\Support\Facades\Artisan::call('spendula:sync');
+        $out = \Illuminate\Support\Facades\Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringNotContainsString('Errors this run:', $out);
     }
 
     public function test_resumes_from_last_continuation_key(): void

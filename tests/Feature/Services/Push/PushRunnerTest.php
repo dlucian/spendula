@@ -211,7 +211,12 @@ class PushRunnerTest extends TestCase
             ], 400),
         ]);
 
-        $this->artisan('spendula:push')->assertFailed();
+        $exit = \Illuminate\Support\Facades\Artisan::call('spendula:push');
+        $out = \Illuminate\Support\Facades\Artisan::output();
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('Errors this run:', $out);
+        $this->assertStringContainsString('HTTP 400', $out);
+        $this->assertStringContainsString('account not found', $out);
 
         $tx = Transaction::query()->sole();
         $this->assertSame(TransactionStatus::Approved, $tx->status);
@@ -227,6 +232,30 @@ class PushRunnerTest extends TestCase
         $this->assertStringContainsString("\n\nResponse: ", (string) $error->error_detail);
         $this->assertStringContainsString('"name":"bad_request"', (string) $error->error_detail);
         $this->assertStringContainsString('"detail":"account not found"', (string) $error->error_detail);
+    }
+
+    public function test_clean_push_does_not_print_error_tail(): void
+    {
+        $this->seedApproved('ref-clean', -1000, 'Pingo Doce');
+
+        Http::fake([
+            'https://api.ynab.test/v1/plans/plan-under-test/transactions' => Http::response([
+                'data' => [
+                    'transactions' => [
+                        [
+                            'id' => 'ynab-1',
+                            'import_id' => $this->expectedImportId(Transaction::query()->sole()),
+                        ],
+                    ],
+                    'duplicate_import_ids' => [],
+                ],
+            ], 201),
+        ]);
+
+        $exit = \Illuminate\Support\Facades\Artisan::call('spendula:push');
+        $out = \Illuminate\Support\Facades\Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringNotContainsString('Errors this run:', $out);
     }
 
     private function seedApproved(string $entryRef, int $amountMilliunits, string $counterparty, TransactionStatus $status = TransactionStatus::Approved): Transaction
