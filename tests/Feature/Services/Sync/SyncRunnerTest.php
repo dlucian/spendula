@@ -16,6 +16,7 @@ use App\Services\EnableBanking\Jwt;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -155,8 +156,8 @@ class SyncRunnerTest extends TestCase
             ], 422),
         ]);
 
-        $exit = \Illuminate\Support\Facades\Artisan::call('spendula:sync');
-        $out = \Illuminate\Support\Facades\Artisan::output();
+        $exit = Artisan::call('spendula:sync');
+        $out = Artisan::output();
         $this->assertSame(1, $exit);
         $this->assertStringContainsString('Errors this run:', $out);
         $this->assertStringContainsString('HTTP 422', $out);
@@ -182,8 +183,8 @@ class SyncRunnerTest extends TestCase
             ], 200),
         ]);
 
-        $exit = \Illuminate\Support\Facades\Artisan::call('spendula:sync');
-        $out = \Illuminate\Support\Facades\Artisan::output();
+        $exit = Artisan::call('spendula:sync');
+        $out = Artisan::output();
         $this->assertSame(0, $exit);
         $this->assertStringNotContainsString('Errors this run:', $out);
     }

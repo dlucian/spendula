@@ -301,7 +301,7 @@ class StatusSnapshotBuilderTest extends TestCase
         $this->assertSame('err-'.(Thresholds::RECENT_ERRORS_LIMIT - 1), $snapshot->recentErrors[Thresholds::RECENT_ERRORS_LIMIT - 1]->detail);
     }
 
-    public function test_recent_errors_panel_excludes_mock_when_includeMock_false(): void
+    public function test_recent_errors_panel_excludes_mock_when_include_mock_false(): void
     {
         $this->seedBank('mock', 'Mock ASPSP');
         $this->seedBank('bcp', 'BCP');

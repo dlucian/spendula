@@ -14,6 +14,7 @@ use App\Services\Sync\DedupHasher;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -211,8 +212,8 @@ class PushRunnerTest extends TestCase
             ], 400),
         ]);
 
-        $exit = \Illuminate\Support\Facades\Artisan::call('spendula:push');
-        $out = \Illuminate\Support\Facades\Artisan::output();
+        $exit = Artisan::call('spendula:push');
+        $out = Artisan::output();
         $this->assertSame(1, $exit);
         $this->assertStringContainsString('Errors this run:', $out);
         $this->assertStringContainsString('HTTP 400', $out);
@@ -252,8 +253,8 @@ class PushRunnerTest extends TestCase
             ], 201),
         ]);
 
-        $exit = \Illuminate\Support\Facades\Artisan::call('spendula:push');
-        $out = \Illuminate\Support\Facades\Artisan::output();
+        $exit = Artisan::call('spendula:push');
+        $out = Artisan::output();
         $this->assertSame(0, $exit);
         $this->assertStringNotContainsString('Errors this run:', $out);
     }

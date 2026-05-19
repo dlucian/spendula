@@ -71,14 +71,21 @@ class PushCommand extends Command
         $this->line('Errors this run:');
         foreach ($errors as $err) {
             $bankAccount = $err->transaction?->bankAccount;
-            $bank = $bankAccount?->bank?->display_name ?? '-';
-            $account = $bankAccount?->display_name ?? $bankAccount?->iban ?? '-';
-            $label = ($bank === '-' && $account === '-')
-                ? '-'
-                : trim($bank.' / '.$account, ' /');
+            $bankName = $bankAccount?->bank?->display_name;
+            $accountName = $bankAccount !== null
+                ? ($bankAccount->display_name ?? $bankAccount->iban)
+                : null;
+
+            if ($bankName === null && $accountName === null) {
+                $label = '-';
+            } elseif ($bankName !== null && $accountName !== null) {
+                $label = $bankName.' / '.$accountName;
+            } else {
+                $label = (string) ($bankName ?? $accountName);
+            }
 
             $http = $err->http_status !== null ? (string) $err->http_status : '-';
-            $detail = $this->collapseDetail((string) $err->error_detail);
+            $detail = $this->collapseDetail($err->error_detail);
 
             $this->line(sprintf(
                 '  <fg=red>•</> [%s] HTTP %s  %s  %s',

@@ -71,20 +71,28 @@ class SyncCommand extends Command
 
         $this->line('Errors this run:');
         foreach ($errors as $err) {
-            $bank = $err->bankAccount?->bank?->display_name ?? '-';
-            $account = $err->bankAccount?->display_name ?? $err->bankAccount?->iban ?? '-';
-            $bankAccount = ($bank === '-' && $account === '-')
-                ? '-'
-                : trim($bank.' / '.$account, ' /');
+            $bankAccount = $err->bankAccount;
+            $bankName = $bankAccount?->bank?->display_name;
+            $accountName = $bankAccount !== null
+                ? ($bankAccount->display_name ?? $bankAccount->iban)
+                : null;
+
+            if ($bankName === null && $accountName === null) {
+                $label = '-';
+            } elseif ($bankName !== null && $accountName !== null) {
+                $label = $bankName.' / '.$accountName;
+            } else {
+                $label = (string) ($bankName ?? $accountName);
+            }
 
             $http = $err->http_status !== null ? (string) $err->http_status : '-';
-            $detail = $this->collapseDetail((string) $err->error_detail);
+            $detail = $this->collapseDetail($err->error_detail);
 
             $this->line(sprintf(
                 '  <fg=red>•</> [%s] HTTP %s  %s  %s',
                 $err->error_type->value,
                 $http,
-                $bankAccount,
+                $label,
                 $detail,
             ));
         }

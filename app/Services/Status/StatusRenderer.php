@@ -184,7 +184,9 @@ class StatusRenderer
             return $bank.' / '.$account;
         }
 
-        return $bank ?? $account ?? '-';
+        // Exactly one of the two is non-null at this point — the (null, null)
+        // case was handled above.
+        return $bank ?? (string) $account;
     }
 
     private function truncateRecentDetail(string $s): string
