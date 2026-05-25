@@ -1252,3 +1252,30 @@ of the rendered text required.
 - Future `--status=` filter (currently fixed to `fetched` per acceptance criteria; out of scope).
 - Pagination cursor for very large queues (out of scope for v1).
 - `schema_version` field in JSON document if cross-repo coordination grows beyond one consumer (flagged in plan risks, deferred).
+
+---
+
+## `spendula:decide <id> <action>` — single-shot review decision (GH #7)
+
+### What changed
+
+- `app/Console/Commands/Spendula/DecideCommand.php` (new) — non-interactive sibling to `spendula:review`. Accepts a transaction UUID, an action (`approve|skip|transfer`), an optional `--reason` (skip-only), and an optional `--remember` flag. Acquires `AdvisoryLock::REVIEW`, validates the action and status guard, delegates to the existing `TransactionActions` service, and optionally calls `PayeeRuleRecorder::record()`. Prints `Decided <uuid>: <action> (rule recorded: yes|no)` on success. Exits non-zero (with descriptive stderr) on bad action, bad action+reason combination, missing transaction, non-`fetched` status, or lock contention.
+- `tests/Feature/Commands/Spendula/DecideCommandTest.php` (new) — 12 test cases covering: approve/skip/transfer with and without `--remember`; reason-on-non-skip rejection; unknown action; already-decided row; missing UUID; lock-busy via a second PDO connection; guarded-payee (`ATM`) denylist suppressing rule creation while still applying the decision.
+
+### Assumptions made
+
+- `AdvisoryLock::REVIEW` is the correct lock — the command mutates the same status columns as the interactive `spendula:review` session and must contend with it.
+- `TransactionActions` and `PayeeRuleRecorder` are stable contracts (unchanged since GH #39); no new mutation logic was needed.
+- Mock ASPSP behaviour not relevant here — the command is lock/state-machine logic only; no Enable Banking calls.
+- YNAB not called — `spendula:push` remains the only path to YNAB.
+- Postgres session timezone was UTC during the test run (config baseline).
+
+### Blast radius
+
+- Additive only: one new artisan command + tests. No service edits, no migration, no schema changes.
+- `DecideCommand` contends with `ReviewCommand` for the `REVIEW` advisory lock. That is the correct contract; no data-corruption risk.
+
+### Open threads
+
+- No undo: agent-driven decisions are corrected via a follow-up `spendula:rules:delete` and/or manual SQL revert (same as documented for the interactive flow).
+- Lock starvation in a tight agent loop is accepted: the agent and the operator should not run simultaneously (documented in the issue risks).
