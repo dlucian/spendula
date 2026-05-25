@@ -114,6 +114,7 @@ class ReviewSession
             ->orderBy('bank_account_id')
             ->orderBy('booking_date')
             ->orderBy('occurrence')
+            ->orderBy('id')
             ->get();
 
         $total = $queue->count();

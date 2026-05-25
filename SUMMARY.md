@@ -1173,3 +1173,33 @@ of the rendered text required.
   §5.4 (manual in v1; no scheduler).
 - **Per-snapshot rate-provider override** (not currently supported;
   always uses the configured provider). No demand today.
+
+---
+
+## GH #6 — `spendula:pending --json` for agent-driven review
+
+### What changed
+
+- **NEW** `app/Console/Commands/Spendula/PendingCommand.php` — read-only artisan command `spendula:pending`. Supports `--json` (single JSON document on stdout), `--bank=<slug>` (filter by bank), and `--limit=N` (cap rows). No advisory lock acquired; zero DB writes. JSON output uses `OutputInterface::OUTPUT_RAW` to prevent Symfony's formatter from stripping `<tag>`-style strings in field values.
+- **NEW** `tests/Feature/Commands/Spendula/PendingCommandTest.php` — 10 feature tests covering: fetched-only filter, JSON schema, empty queue (both branches), bank filter, limit cap, invalid limit, read-only invariant, debit sign semantics, and formatter-tag preservation.
+- **EDIT** `app/Services/Review/ReviewSession.php` — appended `->orderBy('id')` tie-breaker to the `fetched` queue query so `PendingCommand` and `ReviewSession::run()` stay in lock-step row ordering for deterministic `--limit` slicing.
+- **EDIT** `docs/SPEC.md` — added §7.1.2 describing `spendula:pending` with the full JSON shape table, amount-sign semantics, ordering contract, and concurrency note.
+
+### Assumptions made
+
+- `bankAccount.display_name` is operator-friendly enough for `bank_account_label` with no localisation needed.
+- JSON shape (13 keys) is stable enough to commit as the v1 agent contract; no `schema_version` field added (YAGNI per CLAUDE.md, risk noted in plan).
+- Agent tolerates point-in-time snapshots and re-runs if rows disappear between probe and decide.
+- No Mock ASPSP or YNAB API was exercised — command is purely read-only against local DB.
+- Postgres session timezone was UTC during test runs (standard per `config/database.php`).
+
+### Blast radius
+
+- Pure additive: no existing command or service modified beyond the one-line `->orderBy('id')` addition in `ReviewSession::run()`. That change has no functional effect when row ordering was already unique on `(bank_account_id, booking_date, occurrence)`; it only matters when those three columns produce a tie.
+- The `Transaction::query()->where('status', 'fetched')` shape is now shared between `ReviewSession` and `PendingCommand`. If the ordering convention changes in one, the other should track it.
+
+### Open threads
+
+- Future `--status=` filter (currently fixed to `fetched` per acceptance criteria; out of scope).
+- Pagination cursor for very large queues (out of scope for v1).
+- `schema_version` field in JSON document if cross-repo coordination grows beyond one consumer (flagged in plan risks, deferred).

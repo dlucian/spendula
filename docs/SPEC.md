@@ -642,6 +642,48 @@ Two artisan commands round out out-of-band rule management:
 
 Both commands operate without the `REVIEW` advisory lock — they are operator-driven housekeeping, not transaction-mutating.
 
+### 7.1.2 `spendula:pending` — read-only queue probe (GH #6)
+
+`spendula:pending` is the read-only sibling of `spendula:review`. It emits the current `status=fetched` queue without acquiring any advisory lock, mutating any row, or applying payee rules. It is designed for agent-driven workflows where a financial expert agent inspects the queue before calling `spendula:decide` (tracked separately) to submit decisions.
+
+```
+spendula:pending [--json] [--bank=<bank_slug>] [--limit=N]
+```
+
+- `--json`: emit a single JSON document to stdout instead of the human-readable table.
+- `--bank=<bank_slug>`: filter to a single bank (e.g. `revolutlt`). Unknown slug → empty queue, exit 0.
+- `--limit=N`: cap the number of rows (N must be a positive integer). Omit for unlimited.
+
+**Row ordering** (same as `spendula:review`): `bank_account_id`, then `booking_date`, then `occurrence`, then `id` (UUIDv7 tie-breaker for deterministic `--limit` slicing).
+
+**JSON shape** (one object per transaction in the `transactions` array):
+
+| key | type | source |
+|---|---|---|
+| `id` | string | `transactions.id` (UUIDv7) |
+| `bank_slug` | string | `bank_accounts.bank_slug` |
+| `bank_account_id` | string | `transactions.bank_account_id` |
+| `bank_account_label` | string | `display_name` ?? `iban` ?? `id` |
+| `currency` | string | `transactions.currency` |
+| `booking_date` | string | Y-m-d |
+| `amount` | string | absolute decimal with currency-appropriate precision (`Money::decimalPlaces`); sign is carried by `amount_milliunits`, not `amount` |
+| `amount_milliunits` | int | signed; negative = debit |
+| `counterparty_name` | string\|null | `transactions.counterparty_name` |
+| `counterparty_resolution_level` | int | `transactions.counterparty_resolution_level` |
+| `remittance_information` | string\|null | `transactions.remittance_information` |
+| `entry_ref` | string\|null | `transactions.entry_reference` |
+| `occurrence` | int | `transactions.occurrence` |
+
+Top-level document: `{"count": N, "transactions": [...]}`.
+
+Empty queue: `{"count":0,"transactions":[]}`, exit 0.
+
+**Concurrency**: safe to run alongside `spendula:review` and `spendula:sync`. The response is a point-in-time snapshot; the agent must tolerate rows disappearing between the probe and the decide call.
+
+**Amount semantics**: `amount` is always the absolute (unsigned) decimal value. The sign is carried exclusively by `amount_milliunits` — a negative value indicates a debit. The agent must read `amount_milliunits < 0` to determine debit vs. credit, not the `amount` field.
+
+See `spendula:review` (§7.1) for the interactive, state-mutating counterpart.
+
 ### 7.2 Push command
 
 `spendula:push`:
