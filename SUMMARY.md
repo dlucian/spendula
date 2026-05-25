@@ -1,5 +1,54 @@
 # Latest task summary
 
+## Out-of-band rule install: `spendula:rules:add` command (GH #8)
+
+### What changed
+
+- **`app/Console/Commands/Spendula/RulesAddCommand.php`** (new) — artisan command
+  `spendula:rules:add {bank_slug} {counterparty_name} {action} [--reason=] [--force]`.
+  Validates inputs (action in {approve,skip,transfer}, --reason only with skip,
+  bank exists, counterparty non-blank), delegates to `PayeeRuleRecorder::recordDirect()`,
+  prints `Rule added: <id> <bank_slug> <counterparty_name> <action>` on success.
+- **`app/Services/Review/PayeeRuleRecorder.php`** — new `recordDirect()` public
+  method (insert with optional force-overwrite, denylist guard, no resolution-level
+  guard). `isOnDenylist()` promoted from `private` to `public`.
+- **`app/Services/Review/RecordResult.php`** — new `Updated` case returned only by
+  `recordDirect()` when `$force = true` overwrites an existing rule. `record()` is
+  unchanged.
+- **`tests/Feature/Commands/Spendula/RulesAddCommandTest.php`** (new) — 10 feature
+  tests covering create, skip+reason, reason-on-non-skip rejection, denylist guard,
+  AlreadyExists without --force, force overwrite, unknown bank slug, unknown action,
+  blank counterparty, operator-name denylist.
+- **`DECISIONS.md`** — appended GH #8 entry (two-entry-point design, alternatives,
+  consequences).
+
+### Assumptions made
+
+- Real Postgres is up for the feature tests (`spendula_test` per `phpunit.xml`).
+- No `payee_rules` data migration needed — schema unchanged from GH #39.
+- `RecordResult` consumers (`ReviewSession`, `PayeeRuleRecorderTest`) verified by
+  grep to use no exhaustive `match`; adding `Updated` is safe.
+- No advisory lock required — matches `rules:list` / `rules:delete` precedent.
+- Postgres session timezone is UTC during the test run (config baseline).
+
+### Blast radius
+
+- `payee_rules` now has a second write surface. `PayeeRuleEngine` reads rules from
+  the same table during sync/review — a bad `--force` overwrite can change the
+  auto-apply verdict for every future transaction from that counterparty. The
+  denylist guard is the safety net; rollback is `spendula:rules:delete <id>`.
+- `RecordResult` gains a fourth case (`Updated`). Any future exhaustive-match
+  caller will get a PHPStan error rather than a silent wrong branch.
+- `isOnDenylist()` is now `public`; callers can probe it directly. No behaviour
+  change at existing call sites.
+
+### Open threads
+
+- Bulk import from file (multiple rules in one command invocation) — out of scope.
+- Editing an existing rule's counterparty_name — out of scope (use delete + add).
+- No separate "Rule updated:" output line for `--force` overwrites — single
+  `Rule added:` format kept for script-consumer simplicity.
+
 ## Surface EB/YNAB error bodies (GH #2)
 
 ### What changed

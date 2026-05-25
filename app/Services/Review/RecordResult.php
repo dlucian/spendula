@@ -3,14 +3,20 @@
 namespace App\Services\Review;
 
 /**
- * GH #39 — outcome of `PayeeRuleRecorder::record()`. The three terminal
- * states are mutually exclusive: a single record() call produces exactly
- * one of these.
+ * GH #39 / GH #8 — outcome of `PayeeRuleRecorder::record()` and
+ * `PayeeRuleRecorder::recordDirect()`. States are mutually exclusive:
+ * a single call produces exactly one of these.
  */
 enum RecordResult: string
 {
     /** A fresh `payee_rules` row was inserted. */
     case Created = 'created';
+
+    /**
+     * An existing rule was overwritten in place. Only `recordDirect()`
+     * returns this — `record()` never overwrites an existing rule.
+     */
+    case Updated = 'updated';
 
     /**
      * A rule already covered the (bank_slug, counterparty_name) pair;

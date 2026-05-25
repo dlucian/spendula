@@ -85,3 +85,57 @@ Architectural choices, alternatives considered, and the constraints that drove t
 - **Harder:** future structural-field overrides (`FEES`, `INT`, etc.) will either accumulate as universal resolver branches or eventually motivate the schema extension. If the count of universal branches grows beyond ~3–4, that's the signal to revisit alternative 1.
 - **Harder:** the GH #39 `operator_names` denylist is still useful for non-ATM self-transfer cases (the operator's own name appearing as a counterparty for an in-bank transfer), but the *primary* motivating case (ATM withdrawal) is now structurally classified. The denylist is no longer load-bearing for ATM correctness.
 - **Slightly worse:** `Resolver` is now wired by `AppServiceProvider` rather than being container-auto-resolvable from its bare constructor. Tests can still construct it directly with an explicit label argument, so the test surface is unchanged.
+
+
+---
+
+## 2026-05-25 — Out-of-band rule install: `recordDirect()` as a second write entry point (GH #8)
+
+**Decision.** A second entry point `PayeeRuleRecorder::recordDirect()` handles
+explicit `(bank_slug, counterparty_name, action)` installs without a transaction
+in scope. It shares the same denylist guard as `record()` but omits the
+`counterparty_resolution_level` guard (no transaction to resolve; operator/agent
+is trusted to supply a canonical name). Opt-in overwrite via `$force = true` calls
+the existing `update()` helper; insert path mirrors `record()`'s `create()` shape.
+A new `RecordResult::Updated` variant distinguishes force-overwrite from fresh
+insert; `record()` never returns `Updated`. `isOnDenylist()` promoted from
+`private` to `public` so callers can probe without attempting an insert.
+
+**Alternatives considered.**
+
+1. *Collapse `record()` and `recordDirect()` into one method with flags.* Rejected:
+   the two methods have fundamentally different input shapes (a `Transaction` vs.
+   bare `(bank_slug, counterparty_name)`) and different guard sets (resolution-level
+   guard only makes sense when a transaction is in scope). Merging them obscures the
+   contract and creates a method that does different things depending on which
+   arguments are null.
+2. *Write directly from the command via `PayeeRule::query()->create/update`.*
+   Rejected: scatters the denylist guard across the command; a future caller
+   (hypothetical web UI) could then bypass it by forgetting to inline the check.
+   Keeping all `payee_rules` writes funnelled through the recorder is the same
+   reason GH #39 split `Recorder` from `Engine`.
+
+**Constraints.**
+
+- `record()` must remain unchanged — it is the "first-time insert or do nothing"
+  funnel called interactively from `ReviewSession`. Its resolution-level guard is
+  load-bearing for automatic rule suppression at uncertain counterparty levels.
+- The denylist guard in `recordDirect()` must be the same source of truth as in
+  `record()`. Shared via `isOnDenylist()` — no duplication.
+- No advisory lock: `payee_rules` is operator metadata, not transaction-mutating
+  state. Matches `rules:list` / `rules:delete` — REVIEW lock is held by
+  `ReviewCommand`, not by standalone rule-management commands.
+
+**Consequences.**
+
+- **Easier:** agent/operator can install or overwrite a rule without going through
+  the interactive review session.
+- **Easier:** the denylist guard is the centralised safety net for both entry
+  points; any future caller cannot bypass it by going through `recordDirect()`.
+- **Harder:** two write paths must be kept in sync if the denylist signature ever
+  changes. Mitigated by the shared `isOnDenylist()` method and a test suite that
+  exercises both.
+- **Harder:** `RecordResult` now has four cases. Callers doing exhaustive `match`
+  without a default arm will break at compile time — surfaced by PHPStan level 8.
+  Audited before shipping: `ReviewSession` and `PayeeRuleRecorderTest` both consume
+  `RecordResult` but neither uses exhaustive match, so adding `Updated` is safe.

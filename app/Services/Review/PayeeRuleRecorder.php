@@ -123,6 +123,82 @@ class PayeeRuleRecorder
         return $rule;
     }
 
+    /**
+     * Insert (or, with `$force`, overwrite) a rule for the given
+     * `(bank_slug, counterparty_name)` pair — the agent/operator-facing
+     * entry point for out-of-band rule installs (GH #8).
+     *
+     * Success:
+     *   `RecordResult::Created` when no rule existed and a fresh row was
+     *   inserted. `RecordResult::Updated` when a rule already existed and
+     *   `$force === true` — the existing row is mutated in place via
+     *   `update()`, which also clears `skip_reason` on non-skip
+     *   transitions to honour the DB CHECK constraint.
+     *   `RecordResult::AlreadyExists` when a rule exists and
+     *   `$force === false` — nothing is written; the caller decides
+     *   whether to surface the existing row's id to the operator.
+     *   `RecordResult::SkippedByGuard` when `isOnDenylist()` matches —
+     *   nothing is written regardless of `$force`.
+     *
+     * Failure: no exceptions thrown for expected states (guard trip,
+     *   duplicate, etc.) — all are captured in the return enum. DB
+     *   exceptions (constraint violation, connection error) propagate
+     *   as-is; callers should let them bubble.
+     *
+     * Side effects: at most one INSERT or UPDATE against `payee_rules`.
+     *   No HTTP, no queue, no advisory lock. Thread-safe at the DB level
+     *   via the unique index on `(bank_slug, counterparty_name)`.
+     *
+     * Idempotency: with `$force = true`, calling with the same inputs
+     *   converges to the same final DB state. With `$force = false`, a
+     *   second call for an existing pair returns `AlreadyExists`.
+     *
+     * Concurrency: no advisory lock (matches rules:list / rules:delete).
+     *   Two simultaneous inserts for the same pair will race; the second
+     *   surfaces a unique-constraint exception. Acceptable for the
+     *   operator/agent single-threaded use case.
+     *
+     * Note: does NOT apply the `counterparty_resolution_level` guard —
+     *   there is no transaction in scope; explicit operator install trusts
+     *   the caller's judgement.
+     */
+    public function recordDirect(
+        string $bankSlug,
+        string $counterpartyName,
+        TransactionStatus $action,
+        ?string $skipReason = null,
+        bool $force = false,
+    ): RecordResult {
+        if ($this->isOnDenylist($counterpartyName)) {
+            return RecordResult::SkippedByGuard;
+        }
+
+        $existing = PayeeRule::query()
+            ->where('bank_slug', $bankSlug)
+            ->where('counterparty_name', $counterpartyName)
+            ->first();
+
+        if ($existing !== null) {
+            if (! $force) {
+                return RecordResult::AlreadyExists;
+            }
+            $this->update($existing, $action, $skipReason);
+
+            return RecordResult::Updated;
+        }
+
+        PayeeRule::query()->create([
+            'bank_slug' => $bankSlug,
+            'counterparty_name' => $counterpartyName,
+            'action' => $action->value,
+            'skip_reason' => $action === TransactionStatus::Skipped && $skipReason !== null && trim($skipReason) !== ''
+                ? trim($skipReason)
+                : null,
+        ]);
+
+        return RecordResult::Created;
+    }
+
     public function delete(PayeeRule $rule): void
     {
         $rule->delete();
@@ -135,7 +211,7 @@ class PayeeRuleRecorder
         return $account?->bank_slug;
     }
 
-    private function isOnDenylist(string $name): bool
+    public function isOnDenylist(string $name): bool
     {
         $needle = mb_strtolower(trim($name));
 
