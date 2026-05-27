@@ -446,6 +446,7 @@ Implemented:
 | `spendula:banks:add` | Insert an operator bank into the `banks` table directly. Operator banks never appear in source. |
 | `spendula:auth:start {bank_slug}` | Start an EB consent flow; prints the URL to open. |
 | `spendula:accounts:map` | Interactive YNAB-account mapper; walks unmapped rows or maps a single one with `--bank-account-id` + `--ynab-account-id`. Prod path. |
+| `spendula:accounts:deactivate` | Deactivate one bank_account so sync stops attempting it, push stops sending its rows, and status stops surfacing them. `--force` bypasses the unpushed-transactions guard — those rows become dead until the account is reactivated. |
 | `spendula:accounts:seed-mock` | Scripted single-row mapper. Useful for tests / CI; production-style ops uses `spendula:accounts:map` instead. |
 | `spendula:sync [--bank=slug]` | Pull new transactions from Enable Banking. |
 | `spendula:review [--bulk-approve-trivial]` | Terminal queue: Approve / Skip / Transfer / Undo. |
@@ -501,10 +502,10 @@ Phase 4 ships v1 as specified in SPEC §14. Future work maps to SPEC §15.
 | 10 | Tracking handling: transactions stored for audit, balance snapshots pushed on demand | `spendula:tracking:snapshot` ([§10](#10-tracking-accounts-multi-currency)) |
 | 11 | Per-bank-account import cutoff date | `bank_accounts.import_cutoff_date` + sync auto-skip |
 | 12 | Pre-seeded banks (operator-added via `spendula:banks:add`; `mock` fixture in source) | [§7](#7-adding-real-banks-to-the-catalogue) |
-| 13 | Artisan commands: `banks:sync`, `auth:start`, `accounts:map`, `sync`, `review`, `push`, `status`, `convert-pending`[^convert-pending], `tracking:snapshot` | [§13](#13-artisan-commands) |
+| 13 | Artisan commands: `banks:sync`, `auth:start`, `accounts:map`, `accounts:deactivate`, `sync`, `review`, `push`, `status`, `convert-pending`[^convert-pending], `tracking:snapshot` | [§13](#13-artisan-commands) |
 | 14 | Structured error tables (`sync_run_errors`, `push_run_errors`) | migrations under `database/migrations/` |
 | 15 | Redacted structured logging | `App\Logging` redaction processors |
-| 16 | Advisory locks on long-running commands (carve-outs: `accounts:map`, `status`) | `App\Services\Locks\AdvisoryLock` |
+| 16 | Advisory locks on long-running commands (carve-outs: `accounts:map`, `accounts:deactivate`, `status`) | `App\Services\Locks\AdvisoryLock` |
 | 17 | Transactional callback handler with raw-response-first persistence | `BankingCallbackController` |
 | 18 | PHPStan level 8, Pint formatting, unit + fixture integration tests | `phpstan analyse` / `pint --test` / `php artisan test` |
 | 19 | Caddy + Tailscale deployment | [`docs/DEPLOY.md`](docs/DEPLOY.md) |
