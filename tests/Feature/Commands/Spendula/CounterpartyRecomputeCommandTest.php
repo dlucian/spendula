@@ -137,12 +137,12 @@ class CounterpartyRecomputeCommandTest extends TestCase
             'last_seen_at' => Carbon::now(),
         ]);
 
-        $tx = $this->seedTransactionFor($source, 'MONITIVE COM SRL', 2, [
+        $tx = $this->seedTransactionFor($source, 'ACME SRL', 2, [
             'credit_debit_indicator' => 'DBIT',
             'creditor' => null,
             'creditor_account' => null,
             'remittance_information' => [
-                'Beneficiary, MONITIVE COM SRL, To account, RO00BANK0000000000000050, Details, transfer',
+                'Beneficiary, ACME SRL, To account, RO00BANK0000000000000050, Details, transfer',
             ],
         ]);
 
@@ -206,12 +206,12 @@ class CounterpartyRecomputeCommandTest extends TestCase
             'last_seen_at' => Carbon::now(),
         ]);
 
-        $tx = $this->seedTransactionFor($source, 'MONITIVE COM SRL', 2, [
+        $tx = $this->seedTransactionFor($source, 'ACME SRL', 2, [
             'credit_debit_indicator' => 'DBIT',
             'creditor' => null,
             'creditor_account' => null,
             'remittance_information' => [
-                'Beneficiary, MONITIVE COM SRL, To account, RO00BANK0000000000000052, Details, transfer',
+                'Beneficiary, ACME SRL, To account, RO00BANK0000000000000052, Details, transfer',
             ],
         ]);
 
@@ -221,7 +221,7 @@ class CounterpartyRecomputeCommandTest extends TestCase
 
         $tx->refresh();
         $this->assertSame(TransactionStatus::Fetched, $tx->status);
-        $this->assertSame('MONITIVE COM SRL', $tx->counterparty_name);
+        $this->assertSame('ACME SRL', $tx->counterparty_name);
     }
 
     /** @param  array<string, mixed>  $rawPayload */

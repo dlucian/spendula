@@ -326,14 +326,14 @@ class MatchUpdateOrInsertTest extends TestCase
             'debtor' => null,
             'transaction_amount' => ['amount' => '760.00', 'currency' => 'EUR'],
             'remittance_information' => [
-                'Beneficiary, MONITIVE COM SRL, To account, RO00BANK0000000000000001, Details, transfer',
+                'Beneficiary, ACME SRL, To account, RO00BANK0000000000000001, Details, transfer',
             ],
         ]));
 
         $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
         $this->assertSame(TransactionStatus::Transfer, $result->transaction->status);
         $this->assertSame('Transfer : ING SRL EUR Rulaj', $result->transaction->counterparty_name);
-        $this->assertNotSame('MONITIVE COM SRL', $result->transaction->counterparty_name);
+        $this->assertNotSame('ACME SRL', $result->transaction->counterparty_name);
         $this->assertNotSame('BUGETUL DE STAT', $result->transaction->counterparty_name);
         $this->assertNotSame('Bugetul de Stat RO', $result->transaction->counterparty_name);
         $this->assertNotNull($destination->id);
@@ -364,14 +364,14 @@ class MatchUpdateOrInsertTest extends TestCase
             'debtor' => null,
             'transaction_amount' => ['amount' => '235.00', 'currency' => 'EUR'],
             'remittance_information' => [
-                'Beneficiary, MONITIVE COM SRL, To account, RO00BANK0000000000000002, Details, schimb valutar',
+                'Beneficiary, ACME SRL, To account, RO00BANK0000000000000002, Details, schimb valutar',
             ],
         ]));
 
         $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
         $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
         $this->assertSame('Currency Exchange', $result->transaction->counterparty_name);
-        $this->assertNotSame('MONITIVE COM SRL', $result->transaction->counterparty_name);
+        $this->assertNotSame('ACME SRL', $result->transaction->counterparty_name);
     }
 
     /**
@@ -393,7 +393,7 @@ class MatchUpdateOrInsertTest extends TestCase
             'debtor' => null,
             'transaction_amount' => ['amount' => '100.00', 'currency' => 'EUR'],
             'remittance_information' => [
-                'Beneficiary, MONITIVE COM SRL, To account, RO99XXXX0000000000000099, Details, transfer',
+                'Beneficiary, ACME SRL, To account, RO99XXXX0000000000000099, Details, transfer',
             ],
         ]));
 

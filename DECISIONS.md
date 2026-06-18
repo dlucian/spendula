@@ -178,7 +178,7 @@ the historical push stands.
 **YNAB-side mislabel confirmed (§0).** The string "Bugetul de Stat RO" on the 13
 historical rows is a YNAB-side fuzzy payee auto-match against the operator's
 pre-existing payee, not a Spendula-produced value. Verified by `git log -p --all -S
-"Stat RO"` returning empty. The current resolver emits `MONITIVE COM SRL` at L2 via
+"Stat RO"` returning empty. The current resolver emits `ACME SRL` at L2 via
 the `beneficiary-first` rule for those rows — correct behavior; no existing code path
 is unwound.
 
