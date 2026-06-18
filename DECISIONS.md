@@ -139,3 +139,84 @@ insert; `record()` never returns `Updated`. `isOnDenylist()` promoted from
   without a default arm will break at compile time — surfaced by PHPStan level 8.
   Audited before shipping: `ReviewSession` and `PayeeRuleRecorderTest` both consume
   `RecordResult` but neither uses exhaustive match, so adding `Updated` is safe.
+
+
+---
+
+## 2026-06-18 — Own-account transfer/FX classifier as post-resolution override (GH #14)
+
+**Decision.** Add `OwnAccountClassifier` as a DB-aware post-resolution step applied
+after `Resolver::resolve()` at the two call sites that turn `raw_payload` into
+`counterparty_name`: `MatchUpdateOrInsert::parseIncoming()` (sync) and
+`CounterpartyRecomputeCommand::handle()` (backfill). The `Resolver` is contractually
+pure / no-DB, so the own-account IBAN lookup cannot live there. The classifier is a
+separate service that reads `bank_accounts` once per instance (per sync run) into a
+normalized-IBAN map.
+
+Classification rules:
+- Same-currency own-account → `counterparty_name = "<prefix> : <dest display_name>"`,
+  `status = transfer` on insert (after cutoff/tracking guards). Prefix configurable via
+  `SPENDULA_OWN_ACCOUNT_TRANSFER_PREFIX` (default "Transfer").
+- Different-currency own-account (FX move) → `counterparty_name = fx_payee`
+  (config `SPENDULA_OWN_ACCOUNT_FX_PAYEE`, default "Currency Exchange"), `status`
+  unchanged (follows existing cutoff/tracking/fetched guards).
+- External or ambiguous → `classify()` returns null, resolver output is preserved.
+
+Duplicate-IBAN guard: `bank_accounts.iban` is nullable and NOT unique. When multiple
+active accounts share the same normalized IBAN the result is ambiguous — `classify()`
+returns null rather than silently picking one.
+
+Direction-aware IBAN extraction: DBIT → `creditor_account.iban` first then free-text
+"To account,"; CRDT → `debtor_account.iban` first then free-text "From account,".
+
+Backfill (`spendula:counterparty:recompute`): promotes `fetched → transfer` only for
+same-currency own-account rows. All other statuses (approved, skipped, pushed,
+tracking, transfer) are status-invariant per SPEC §5.3 no-regress. Already-pushed rows
+stay as-is and must be corrected in YNAB by hand; YNAB deduplicates on `import_id` so
+the historical push stands.
+
+**YNAB-side mislabel confirmed (§0).** The string "Bugetul de Stat RO" on the 13
+historical rows is a YNAB-side fuzzy payee auto-match against the operator's
+pre-existing payee, not a Spendula-produced value. Verified by `git log -p --all -S
+"Stat RO"` returning empty. The current resolver emits `MONITIVE COM SRL` at L2 via
+the `beneficiary-first` rule for those rows — correct behavior; no existing code path
+is unwound.
+
+**SPEC §8 FX divergence.** SPEC §8 loosely describes the EUR side of an FX own-account
+move as "tagged as transfer". GH #14 supersedes that: cross-currency own-account moves
+stay `fetched` (status_unchanged) with the FX label payee. Reason: YNAB cannot model
+a clean cross-currency transfer; the EUR outflow is a genuine reviewable budget event.
+The operator manages the RON inflow on the other account independently.
+
+**Alternatives considered.**
+
+1. *IBAN lookup inside `Resolver`.* Rejected: `Resolver` is contractually pure / no-DB
+   (`Resolver.php` docblock), tested as a pure unit (no DB). Adding a DB call breaks
+   the contract and couples the resolver to Eloquent.
+2. *New resolution level (L5 "own-account").* Rejected: changes the operator-facing
+   review display, breaks the 0-4 histogram in `CounterpartyRecomputeCommand`, and the
+   `counterparty_resolution_level >= 4` guard in `PayeeRuleRecorder`. The IBAN match
+   is a post-resolution override, not a new resolution tier. Resolution level stays at
+   whatever the resolver produced (preserving the L0–L4 histogram unchanged).
+3. *Single combined payee for same-currency and FX.* Rejected: a same-currency
+   own-account transfer is structurally different from an FX move and warrants a
+   different status (`transfer` vs `fetched`). Collapsing them would force the operator
+   to re-decide every FX move that YNAB receives under the transfer payee.
+
+**Constraints.** `bank_accounts.iban` is nullable and NOT unique (schema has no
+unique constraint on that column). Silent map-key collision would silently misclassify.
+The `count === 1` guard prevents any ambiguous match from overriding.
+
+**Consequences.**
+
+- **Easier:** own-account transfers and FX moves now get correct payees and status
+  automatically on sync; no manual operator action needed for new rows.
+- **Easier:** `counterparty_resolution_level` histogram is untouched — the recompute
+  command's before/after display is not perturbed by the new classification path.
+- **Harder:** already-pushed own-account rows (the 13 historical ones) must be
+  corrected manually in YNAB. `spendula:counterparty:recompute` updates the local DB
+  row but cannot update the YNAB-side payee after the push.
+- **Harder:** a future bank that encodes its own transfers in a format other than
+  "To account, <IBAN>" (e.g., `internal_transfer_id` field) requires a new extraction
+  path in `OwnAccountClassifier::extractDestinationIban()`. The current free-text
+  patterns are ING-RO–specific; structured `creditor_account.iban` is universal.

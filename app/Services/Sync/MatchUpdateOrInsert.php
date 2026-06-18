@@ -7,6 +7,7 @@ use App\Enums\TransactionStatus;
 use App\Enums\YnabAccountType;
 use App\Models\BankAccount;
 use App\Models\Transaction;
+use App\Services\Counterparty\OwnAccountClassifier;
 use App\Services\Counterparty\Resolver;
 use App\Services\Money\Money;
 use Illuminate\Support\Carbon;
@@ -39,7 +40,10 @@ use InvalidArgumentException;
  */
 class MatchUpdateOrInsert
 {
-    public function __construct(private readonly Resolver $resolver) {}
+    public function __construct(
+        private readonly Resolver $resolver,
+        private readonly OwnAccountClassifier $classifier,
+    ) {}
 
     /**
      * @param  array<string, mixed>  $ebTransaction
@@ -186,6 +190,24 @@ class MatchUpdateOrInsert
         $rawCounterparty = $this->extractRawCounterparty($ebTransaction);
         $resolved = $this->resolver->resolve($ebTransaction, $account->bank_slug);
 
+        // Post-resolution own-account override. Runs after the Resolver so the
+        // resolver's IBAN-independent output (L0–L4 level) is preserved in
+        // counterparty_resolution_level; only counterparty_name is overridden here.
+        $classification = $this->classifier->classify($ebTransaction, $account);
+        $counterpartyName = $resolved->name;
+        $ownAccountTransfer = false;
+
+        if ($classification !== null) {
+            if ($classification->sameCurrency) {
+                $prefix = (string) config('spendula.own_account.transfer_prefix', 'Transfer');
+                $dest = $classification->destination->display_name ?? $classification->destinationIban;
+                $counterpartyName = mb_substr("{$prefix} : {$dest}", 0, 64);
+                $ownAccountTransfer = true;
+            } else {
+                $counterpartyName = (string) config('spendula.own_account.fx_payee', 'Currency Exchange');
+            }
+        }
+
         $remittance = null;
         if (isset($ebTransaction['remittance_information']) && is_array($ebTransaction['remittance_information'])) {
             $parts = array_filter($ebTransaction['remittance_information'], 'is_string');
@@ -216,10 +238,11 @@ class MatchUpdateOrInsert
             currency: $currency,
             creditDebitIndicator: $cdi,
             rawCounterparty: $rawCounterparty,
-            counterpartyName: $resolved->name,
+            counterpartyName: $counterpartyName,
             counterpartyResolutionLevel: $resolved->level,
             remittanceInformation: $remittance,
             now: $now,
+            ownAccountTransfer: $ownAccountTransfer,
         );
     }
 
@@ -229,6 +252,7 @@ class MatchUpdateOrInsert
         $status = match (true) {
             $beforeCutoff => TransactionStatus::Skipped,
             $parsed->account->ynab_account_type === YnabAccountType::Tracking => TransactionStatus::Tracking,
+            $parsed->ownAccountTransfer => TransactionStatus::Transfer,
             default => TransactionStatus::Fetched,
         };
 

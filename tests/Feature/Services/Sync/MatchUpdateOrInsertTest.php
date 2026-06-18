@@ -8,6 +8,7 @@ use App\Enums\YnabAccountType;
 use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\Transaction;
+use App\Services\Counterparty\OwnAccountClassifier;
 use App\Services\Counterparty\Resolver;
 use App\Services\Counterparty\Rules\RuleEngine;
 use App\Services\Counterparty\Rules\RuleLoader;
@@ -49,10 +50,13 @@ class MatchUpdateOrInsertTest extends TestCase
             'last_seen_at' => Carbon::now(),
         ]);
 
-        $this->apply = new MatchUpdateOrInsert(new Resolver(
-            new RuleLoader(base_path('config/counterparty-rules-enabled')),
-            new RuleEngine,
-        ));
+        $this->apply = new MatchUpdateOrInsert(
+            new Resolver(
+                new RuleLoader(base_path('config/counterparty-rules-enabled')),
+                new RuleEngine,
+            ),
+            new OwnAccountClassifier,
+        );
     }
 
     /** @return array<string, mixed> */
@@ -291,5 +295,331 @@ class MatchUpdateOrInsertTest extends TestCase
         $this->assertSame(1, $result->transaction->counterparty_resolution_level);
         $this->assertSame('EMPLOYER PAYROLL', $result->transaction->counterparty_name);
         $this->assertSame(1_800_000, $result->transaction->amount_milliunits);
+    }
+
+    // -----------------------------------------------------------------------
+    // Own-account classifier tests (GH #14)
+    // -----------------------------------------------------------------------
+
+    /**
+     * DBIT, same currency, destination IBAN only in free-text "To account,".
+     * Acceptance criterion #1: status=transfer, counterparty_name="Transfer : <dest>".
+     */
+    public function test_own_account_same_currency_dbit_free_text_classified_as_transfer(): void
+    {
+        $destination = BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'ING SRL EUR Rulaj',
+            'iban' => 'RO00BANK0000000000000001',
+            'currency' => 'EUR',
+            'is_base_currency' => true,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'own1',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => null,
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '760.00', 'currency' => 'EUR'],
+            'remittance_information' => [
+                'Beneficiary, MONITIVE COM SRL, To account, RO00BANK0000000000000001, Details, transfer',
+            ],
+        ]));
+
+        $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
+        $this->assertSame(TransactionStatus::Transfer, $result->transaction->status);
+        $this->assertSame('Transfer : ING SRL EUR Rulaj', $result->transaction->counterparty_name);
+        $this->assertNotSame('MONITIVE COM SRL', $result->transaction->counterparty_name);
+        $this->assertNotSame('BUGETUL DE STAT', $result->transaction->counterparty_name);
+        $this->assertNotSame('Bugetul de Stat RO', $result->transaction->counterparty_name);
+        $this->assertNotNull($destination->id);
+    }
+
+    /**
+     * DBIT, different currency (EUR tx → RON destination), IBAN in free-text.
+     * Acceptance criterion #2: status=fetched, counterparty_name="Currency Exchange".
+     */
+    public function test_own_account_different_currency_dbit_free_text_classified_as_fx(): void
+    {
+        BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'ING SRL RON',
+            'iban' => 'RO00BANK0000000000000002',
+            'currency' => 'RON',
+            'is_base_currency' => false,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'own2',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => null,
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '235.00', 'currency' => 'EUR'],
+            'remittance_information' => [
+                'Beneficiary, MONITIVE COM SRL, To account, RO00BANK0000000000000002, Details, schimb valutar',
+            ],
+        ]));
+
+        $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
+        $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
+        $this->assertSame('Currency Exchange', $result->transaction->counterparty_name);
+        $this->assertNotSame('MONITIVE COM SRL', $result->transaction->counterparty_name);
+    }
+
+    /**
+     * Acceptance criterion #3: external IBAN (not an own account) → no own-account override.
+     * The "To account, <IBAN>" is detected but the IBAN does not belong to any own account,
+     * so the classifier returns null and the resolver output stands unchanged (status=fetched,
+     * no Transfer/FX label applied). The exact resolved name depends on the bank's rules
+     * (mock bank has no beneficiary-first rule, so L2 returns the raw trimmed remittance);
+     * what matters is that the own-account classifier did NOT fire.
+     */
+    public function test_external_beneficiary_with_to_account_not_overridden(): void
+    {
+        // No own account with this IBAN — classifier must return null.
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'ext1',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => null,
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '100.00', 'currency' => 'EUR'],
+            'remittance_information' => [
+                'Beneficiary, MONITIVE COM SRL, To account, RO99XXXX0000000000000099, Details, transfer',
+            ],
+        ]));
+
+        $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
+        $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
+        // Classifier did NOT apply — name is the resolver's L2 output (raw remittance for mock bank).
+        $this->assertStringNotContainsString('Transfer :', $result->transaction->counterparty_name ?? '');
+        $this->assertNotSame('Currency Exchange', $result->transaction->counterparty_name);
+        $this->assertNotSame('BUGETUL DE STAT', $result->transaction->counterparty_name);
+        $this->assertNotSame('Bugetul de Stat RO', $result->transaction->counterparty_name);
+    }
+
+    /**
+     * Acceptance criterion #4: unparseable free-text → (Unknown) — never "BUGETUL DE STAT".
+     * Pins the no-mislabel guarantee from SPEC §0.
+     */
+    public function test_unparseable_remittance_resolves_to_unknown_never_bugetul(): void
+    {
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'unk1',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '50.00', 'currency' => 'EUR'],
+            'remittance_information' => ['completely unparseable free text xyzzy'],
+        ]));
+
+        $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
+        $this->assertNotSame('BUGETUL DE STAT', $result->transaction->counterparty_name);
+        $this->assertNotSame('Bugetul de Stat RO', $result->transaction->counterparty_name);
+        $this->assertNotSame('Currency Exchange', $result->transaction->counterparty_name);
+    }
+
+    /**
+     * Acceptance criterion #5: structured creditor_account.iban path used before free-text.
+     */
+    public function test_own_account_structured_iban_takes_priority_over_free_text(): void
+    {
+        $destination = BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'ING SRL EUR Structured',
+            'iban' => 'RO00BANK0000000000000003',
+            'currency' => 'EUR',
+            'is_base_currency' => true,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'struct1',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => ['iban' => 'RO00BANK0000000000000003'],
+            'debtor' => null,
+            // Free-text points to an unknown IBAN — structured field wins.
+            'remittance_information' => [
+                'To account, RO99XXXX0000000000000099',
+            ],
+        ]));
+
+        $this->assertSame(TransactionStatus::Transfer, $result->transaction->status);
+        $this->assertSame('Transfer : ING SRL EUR Structured', $result->transaction->counterparty_name);
+        $this->assertNotNull($destination->id);
+    }
+
+    /**
+     * Acceptance criterion #6: self-exclusion — destination IBAN = source account IBAN → no override.
+     */
+    public function test_own_account_self_transfer_not_classified(): void
+    {
+        // Give the source account its own IBAN.
+        $this->account->iban = 'RO00BANK0000000000000010';
+        $this->account->save();
+
+        $result = $this->apply->apply($this->account->refresh(), $this->sampleTransaction([
+            'entry_reference' => 'self1',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => ['iban' => 'RO00BANK0000000000000010'],
+            'debtor' => null,
+        ]));
+
+        // Source excluded → no own-account match → normal resolution (L4 unknown or remittance).
+        $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
+        $this->assertNotSame('Transfer : ', substr($result->transaction->counterparty_name ?? '', 0, 10));
+    }
+
+    /**
+     * Acceptance criterion #6 (inactive variant): inactive own account not matched.
+     */
+    public function test_inactive_own_account_not_classified(): void
+    {
+        BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'Inactive Account',
+            'iban' => 'RO00BANK0000000000000011',
+            'currency' => 'EUR',
+            'is_base_currency' => true,
+            'active' => false,  // <-- inactive
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'inactive1',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => ['iban' => 'RO00BANK0000000000000011'],
+            'debtor' => null,
+        ]));
+
+        $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
+        $this->assertNotSame('Currency Exchange', $result->transaction->counterparty_name);
+    }
+
+    /**
+     * Codex refinement #1: duplicate active IBAN → ambiguous → no override.
+     */
+    public function test_duplicate_active_iban_is_ambiguous_no_override(): void
+    {
+        $sharedIban = 'RO00BANK0000000000000020';
+
+        BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'Account A',
+            'iban' => $sharedIban,
+            'currency' => 'EUR',
+            'is_base_currency' => true,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'Account B',
+            'iban' => $sharedIban,
+            'currency' => 'EUR',
+            'is_base_currency' => true,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'dup1',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => ['iban' => $sharedIban],
+            'debtor' => null,
+        ]));
+
+        // Ambiguous → no override → normal resolution.
+        $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
+        $this->assertNotSame('Transfer : Account A', $result->transaction->counterparty_name);
+        $this->assertNotSame('Transfer : Account B', $result->transaction->counterparty_name);
+    }
+
+    /**
+     * Codex refinement #2: CRDT own-account transfer with "From account," in free-text.
+     */
+    public function test_own_account_crdt_free_text_from_account_classified_as_transfer(): void
+    {
+        // The source account (CRDT = inbound) is $this->account (EUR).
+        // The debtor (origin account we're receiving from) is our own RON account.
+        $origin = BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'ING SRL EUR Savings',
+            'iban' => 'RO00BANK0000000000000030',
+            'currency' => 'EUR',
+            'is_base_currency' => true,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'crdt1',
+            'credit_debit_indicator' => 'CRDT',
+            'creditor' => null,
+            'creditor_account' => null,
+            'debtor' => null,
+            'debtor_account' => null,
+            'transaction_amount' => ['amount' => '500.00', 'currency' => 'EUR'],
+            'remittance_information' => [
+                'Transfer, From account, RO00BANK0000000000000030, Details, internal',
+            ],
+        ]));
+
+        $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
+        $this->assertSame(TransactionStatus::Transfer, $result->transaction->status);
+        $this->assertSame('Transfer : ING SRL EUR Savings', $result->transaction->counterparty_name);
+        $this->assertNotNull($origin->id);
+    }
+
+    /**
+     * Codex refinement #3: pre-cutoff own-account transfer → skipped (not transfer).
+     * Cutoff guard must still win over the ownAccountTransfer flag.
+     */
+    public function test_own_account_pre_cutoff_lands_as_skipped(): void
+    {
+        $this->account->import_cutoff_date = Carbon::parse('2026-04-01');
+        $this->account->save();
+
+        BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'ING SRL EUR Target',
+            'iban' => 'RO00BANK0000000000000040',
+            'currency' => 'EUR',
+            'is_base_currency' => true,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account->refresh(), $this->sampleTransaction([
+            'entry_reference' => 'cutoff1',
+            'booking_date' => '2026-03-15',  // before cutoff
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => ['iban' => 'RO00BANK0000000000000040'],
+            'debtor' => null,
+        ]));
+
+        $this->assertSame(TransactionStatus::Skipped, $result->transaction->status);
+        $this->assertSame('before import cutoff', $result->transaction->skip_reason);
     }
 }
