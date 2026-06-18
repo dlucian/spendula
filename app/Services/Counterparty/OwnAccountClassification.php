@@ -25,4 +25,18 @@ final class OwnAccountClassification
          */
         public readonly bool $sameCurrency,
     ) {}
+
+    /**
+     * Human-readable label for the destination account.
+     *
+     * Returns the trimmed display_name when non-blank; falls back to the
+     * normalized IBAN. Prevents "Transfer : " (with an empty suffix) when
+     * display_name is null, empty, or whitespace-only.
+     */
+    public function destinationLabel(): string
+    {
+        $name = trim((string) $this->destination->display_name);
+
+        return $name !== '' ? $name : $this->destinationIban;
+    }
 }

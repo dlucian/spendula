@@ -241,6 +241,100 @@ class OwnAccountClassifierTest extends TestCase
         $this->assertNull($result);
     }
 
+    public function test_source_and_another_active_account_share_iban_returns_null(): void
+    {
+        // Major 1 guard: when the source account itself shares an IBAN with
+        // another active account, the destination is ambiguous — no override.
+        // Previously, the source was excluded first so only the other account
+        // remained (count == 1), wrongly producing a classification.
+        $sharedIban = 'RO00BANK0000000000000030';
+        $this->source->iban = $sharedIban;
+        $this->source->save();
+        $this->createAccount($sharedIban, 'EUR', 'Other Account');
+
+        $result = $this->classifier->classify([
+            'credit_debit_indicator' => 'DBIT',
+            'transaction_amount' => ['currency' => 'EUR', 'amount' => '50.00'],
+            'creditor_account' => ['iban' => $sharedIban],
+            'remittance_information' => [],
+        ], $this->source->refresh());
+
+        $this->assertNull($result);
+    }
+
+    // -----------------------------------------------------------------------
+    // Spaced-IBAN free-text extraction (Major 2)
+    // -----------------------------------------------------------------------
+
+    public function test_dbit_free_text_spaced_iban_classified(): void
+    {
+        $dest = $this->createAccount('RO00BANK0000000000000040', 'EUR');
+
+        $result = $this->classifier->classify([
+            'credit_debit_indicator' => 'DBIT',
+            'transaction_amount' => ['currency' => 'EUR', 'amount' => '200.00'],
+            'creditor_account' => null,
+            'remittance_information' => [
+                'To account, RO00 BANK 0000 0000 0000 0040, Details',
+            ],
+        ], $this->source);
+
+        $this->assertNotNull($result);
+        $this->assertSame($dest->id, $result->destination->id);
+        $this->assertSame('RO00BANK0000000000000040', $result->destinationIban);
+    }
+
+    public function test_crdt_free_text_spaced_iban_classified(): void
+    {
+        $origin = $this->createAccount('RO00BANK0000000000000041', 'EUR');
+
+        $result = $this->classifier->classify([
+            'credit_debit_indicator' => 'CRDT',
+            'transaction_amount' => ['currency' => 'EUR', 'amount' => '200.00'],
+            'debtor_account' => null,
+            'remittance_information' => [
+                'From account, RO00 BANK 0000 0000 0000 0041',
+            ],
+        ], $this->source);
+
+        $this->assertNotNull($result);
+        $this->assertSame($origin->id, $result->destination->id);
+        $this->assertSame('RO00BANK0000000000000041', $result->destinationIban);
+    }
+
+    // -----------------------------------------------------------------------
+    // Blank display_name falls back to IBAN in destinationLabel() (Minor)
+    // -----------------------------------------------------------------------
+
+    public function test_blank_display_name_falls_back_to_iban_in_label(): void
+    {
+        foreach (['', '   '] as $blankName) {
+            $dest = BankAccount::query()->create([
+                'bank_slug' => 'mock',
+                'display_name' => $blankName,
+                'iban' => 'RO00BANK0000000000000050',
+                'currency' => 'EUR',
+                'is_base_currency' => true,
+                'active' => true,
+                'first_linked_at' => Carbon::now(),
+                'last_seen_at' => Carbon::now(),
+            ]);
+
+            $classifier = new OwnAccountClassifier;
+            $result = $classifier->classify([
+                'credit_debit_indicator' => 'DBIT',
+                'transaction_amount' => ['currency' => 'EUR', 'amount' => '50.00'],
+                'creditor_account' => ['iban' => 'RO00BANK0000000000000050'],
+                'remittance_information' => [],
+            ], $this->source);
+
+            $this->assertNotNull($result);
+            $this->assertSame('RO00BANK0000000000000050', $result->destinationLabel());
+
+            $dest->delete();
+        }
+    }
+
     // -----------------------------------------------------------------------
     // normalizeIban
     // -----------------------------------------------------------------------

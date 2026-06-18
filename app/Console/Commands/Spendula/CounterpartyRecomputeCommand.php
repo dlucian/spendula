@@ -85,8 +85,7 @@ class CounterpartyRecomputeCommand extends Command
                     if ($classification !== null) {
                         if ($classification->sameCurrency) {
                             $prefix = (string) config('spendula.own_account.transfer_prefix', 'Transfer');
-                            $dest = $classification->destination->display_name ?? $classification->destinationIban;
-                            $newName = mb_substr("{$prefix} : {$dest}", 0, 64);
+                            $newName = mb_substr("{$prefix} : {$classification->destinationLabel()}", 0, 64);
                             $ownAccountSameCurrency = true;
                         } else {
                             $newName = (string) config('spendula.own_account.fx_payee', 'Currency Exchange');

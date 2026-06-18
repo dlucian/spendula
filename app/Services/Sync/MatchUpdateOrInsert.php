@@ -200,8 +200,7 @@ class MatchUpdateOrInsert
         if ($classification !== null) {
             if ($classification->sameCurrency) {
                 $prefix = (string) config('spendula.own_account.transfer_prefix', 'Transfer');
-                $dest = $classification->destination->display_name ?? $classification->destinationIban;
-                $counterpartyName = mb_substr("{$prefix} : {$dest}", 0, 64);
+                $counterpartyName = mb_substr("{$prefix} : {$classification->destinationLabel()}", 0, 64);
                 $ownAccountTransfer = true;
             } else {
                 $counterpartyName = (string) config('spendula.own_account.fx_payee', 'Currency Exchange');

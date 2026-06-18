@@ -83,18 +83,20 @@ final class OwnAccountClassifier
         $map = $this->loadIbanMap();
         $candidates = $map[$normalized] ?? [];
 
-        // Exclude the source account (self-transfer prevention).
-        $candidates = array_values(array_filter(
-            $candidates,
-            static fn (BankAccount $a): bool => $a->id !== $source->id,
-        ));
-
-        // Ambiguous or no match → no override.
+        // Ambiguity guard: require exactly one active account for this IBAN
+        // BEFORE source exclusion. If two active accounts share the same
+        // normalized IBAN the destination is indeterminate — no override even
+        // when one of the matches is the source itself.
         if (count($candidates) !== 1) {
             return null;
         }
 
         $destination = $candidates[0];
+
+        // Self-transfer prevention: the sole candidate is the source itself.
+        if ($destination->id === $source->id) {
+            return null;
+        }
 
         $txCurrencyRaw = $ebTransaction['transaction_amount']['currency'] ?? null;
         $txCurrency = strtoupper(is_string($txCurrencyRaw) ? $txCurrencyRaw : $source->currency);
@@ -152,9 +154,12 @@ final class OwnAccountClassifier
         // Free-text fallback: direction-aware pattern in remittance_information[].
         // DBIT: "To account, <IBAN>" (ING-RO business format)
         // CRDT: "From account, <IBAN>" (mirror of the same format on the inbound side)
+        // Spaces are allowed within the IBAN token (e.g. "RO00 BANK 0000 0000
+        // 0000 0001"); the lazy quantifier stops at the first comma or end of
+        // string. normalizeIban() strips the spaces before the DB lookup.
         $pattern = $cdi === 'CRDT'
-            ? '/\bFrom account,\s*([A-Z]{2}[0-9]{2}[A-Z0-9]{1,30})/i'
-            : '/\bTo account,\s*([A-Z]{2}[0-9]{2}[A-Z0-9]{1,30})/i';
+            ? '/\bFrom account,\s*([A-Z]{2}[0-9]{2}[A-Z0-9 ]+?)(?=\s*,|\s*$)/i'
+            : '/\bTo account,\s*([A-Z]{2}[0-9]{2}[A-Z0-9 ]+?)(?=\s*,|\s*$)/i';
 
         $remittances = $ebTransaction['remittance_information'] ?? null;
         if (! is_array($remittances)) {

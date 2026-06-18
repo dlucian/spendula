@@ -1,5 +1,36 @@
 # Latest task summary
 
+## Own-account classifier — codex review round 1 edge-case fixes (GH #14)
+
+### What changed
+
+- **`app/Services/Counterparty/OwnAccountClassifier.php`** — two fixes:
+  1. **(Major 1) Ambiguity guard moved before source exclusion.** Count of active accounts matching the normalized IBAN is now checked *before* filtering out the source. If count ≠ 1, return null immediately. If count == 1 and sole candidate is the source (self-transfer), return null. Fixes the prior bug where source + one other active account sharing an IBAN would produce count == 1 after source exclusion and wrongly classify the other account.
+  2. **(Major 2) Spaced-IBAN regex.** Free-text patterns `"To account,"`/`"From account,"` now capture `[A-Z0-9 ]+?` (spaces allowed) with lookahead `(?=\s*,|\s*$)`. `normalizeIban()` strips spaces before the DB lookup.
+- **`app/Services/Counterparty/OwnAccountClassification.php`** — **(Minor)** new `destinationLabel(): string` method. Returns `trim(display_name)` when non-blank, else falls back to `destinationIban`. Prevents `"Transfer : "` when `display_name` is null/empty/whitespace.
+- **`app/Services/Sync/MatchUpdateOrInsert.php`** — **(Minor)** use `$classification->destinationLabel()`.
+- **`app/Console/Commands/Spendula/CounterpartyRecomputeCommand.php`** — **(Minor)** same call-site fix.
+- **`tests/Feature/Services/Counterparty/OwnAccountClassifierTest.php`** — four new tests: Major 1 regression guard (source + another active account share IBAN → null), Major 2 DBIT spaced IBAN, Major 2 CRDT spaced IBAN, Minor blank display_name falls back to IBAN.
+- **`tests/Unit/Services/Counterparty/ResolverTest.php`** — two new tests (Major 3, test-only): external beneficiary resolves to itself NOT "BUGETUL DE STAT"; unparseable remittance resolves to own text NOT "BUGETUL DE STAT".
+
+No migrations, no new commands, no new routes. Full suite 477/477.
+
+### Assumptions made
+
+- Postgres session timezone is UTC during test run. Tests run against real Postgres `spendula_test`.
+- "BUGETUL DE STAT" mislabeling confirmed YNAB-side auto-match (prior session verified via `git log -p --all -S "Stat RO"` returning empty). Major 3 tests codify this invariant.
+
+### Blast radius
+
+- `OwnAccountClassifier::classify()`: behavioral change only for source + another active account sharing an IBAN (was wrongly classified, now null).
+- `MatchUpdateOrInsert` and `CounterpartyRecomputeCommand`: behavioral change only when `display_name` is blank/whitespace (was "Transfer : ", now uses IBAN as suffix).
+
+### Open threads
+
+- Rows already pushed with blank display_name have "Transfer : " in YNAB; operator can run `spendula:counterparty:recompute` locally and rename in YNAB manually.
+
+---
+
 ## Own-account transfer/FX classifier (GH #14)
 
 ### What changed
