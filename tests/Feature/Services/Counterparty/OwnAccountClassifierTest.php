@@ -302,6 +302,46 @@ class OwnAccountClassifierTest extends TestCase
         $this->assertSame('RO00BANK0000000000000041', $result->destinationIban);
     }
 
+    public function test_dbit_free_text_spaced_iban_trailing_words_no_comma_classified(): void
+    {
+        // Regression: "RO00 BANK … 0042 Details" (no comma after the IBAN) previously
+        // captured "…0042DETAILS" after normalization, which failed the map lookup.
+        // The prefix approach handles trailing words without needing a comma delimiter.
+        $dest = $this->createAccount('RO00BANK0000000000000042', 'EUR');
+
+        $result = $this->classifier->classify([
+            'credit_debit_indicator' => 'DBIT',
+            'transaction_amount' => ['currency' => 'EUR', 'amount' => '75.00'],
+            'creditor_account' => null,
+            'remittance_information' => [
+                'To account, RO00 BANK 0000 0000 0000 0042 Details',
+            ],
+        ], $this->source);
+
+        $this->assertNotNull($result);
+        $this->assertSame($dest->id, $result->destination->id);
+        $this->assertSame('RO00BANK0000000000000042', $result->destinationIban);
+    }
+
+    public function test_crdt_free_text_spaced_iban_trailing_words_no_comma_classified(): void
+    {
+        // Mirror of the DBIT regression case for CRDT / "From account," tag.
+        $origin = $this->createAccount('RO00BANK0000000000000043', 'EUR');
+
+        $result = $this->classifier->classify([
+            'credit_debit_indicator' => 'CRDT',
+            'transaction_amount' => ['currency' => 'EUR', 'amount' => '75.00'],
+            'debtor_account' => null,
+            'remittance_information' => [
+                'From account, RO00 BANK 0000 0000 0000 0043 Reference',
+            ],
+        ], $this->source);
+
+        $this->assertNotNull($result);
+        $this->assertSame($origin->id, $result->destination->id);
+        $this->assertSame('RO00BANK0000000000000043', $result->destinationIban);
+    }
+
     // -----------------------------------------------------------------------
     // Blank display_name falls back to IBAN in destinationLabel() (Minor)
     // -----------------------------------------------------------------------

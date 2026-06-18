@@ -70,7 +70,8 @@ final class OwnAccountClassifier
      */
     public function classify(array $ebTransaction, BankAccount $source): ?OwnAccountClassification
     {
-        $iban = $this->extractDestinationIban($ebTransaction);
+        $map = $this->loadIbanMap();
+        $iban = $this->extractDestinationIban($ebTransaction, $map);
         if ($iban === null) {
             return null;
         }
@@ -79,8 +80,6 @@ final class OwnAccountClassifier
         if ($normalized === '') {
             return null;
         }
-
-        $map = $this->loadIbanMap();
         $candidates = $map[$normalized] ?? [];
 
         // Ambiguity guard: require exactly one active account for this IBAN
@@ -126,11 +125,21 @@ final class OwnAccountClassifier
      * it comes from the debtor. Try the structured account field first; fall
      * back to free-text patterns in `remittance_information[]`.
      *
+     * Free-text fallback strategy: after locating the "To account," / "From
+     * account," tag, the remainder of the line is normalized (strip whitespace,
+     * uppercase) and each known own-account IBAN is tested as a prefix of that
+     * normalized text. Exactly one prefix hit → return that IBAN; zero or
+     * more-than-one → null. This avoids brittle IBAN-length guessing and
+     * naturally ignores trailing words (e.g. "RO00 BANK … 0040 Details" →
+     * normalized → prefix-matched → own IBAN) whether or not a comma separator
+     * is present after the IBAN.
+     *
      * Returns null when no IBAN is found or the direction is unrecognised.
      *
      * @param  array<string, mixed>  $ebTransaction
+     * @param  array<string, list<BankAccount>>  $ibanMap  Normalized-IBAN → accounts map (used for free-text prefix lookup).
      */
-    private function extractDestinationIban(array $ebTransaction): ?string
+    private function extractDestinationIban(array $ebTransaction, array $ibanMap): ?string
     {
         $cdi = strtoupper(
             is_string($ebTransaction['credit_debit_indicator'] ?? null)
@@ -151,15 +160,16 @@ final class OwnAccountClassifier
             return $structured['iban'];
         }
 
-        // Free-text fallback: direction-aware pattern in remittance_information[].
-        // DBIT: "To account, <IBAN>" (ING-RO business format)
-        // CRDT: "From account, <IBAN>" (mirror of the same format on the inbound side)
-        // Spaces are allowed within the IBAN token (e.g. "RO00 BANK 0000 0000
-        // 0000 0001"); the lazy quantifier stops at the first comma or end of
-        // string. normalizeIban() strips the spaces before the DB lookup.
-        $pattern = $cdi === 'CRDT'
-            ? '/\bFrom account,\s*([A-Z]{2}[0-9]{2}[A-Z0-9 ]+?)(?=\s*,|\s*$)/i'
-            : '/\bTo account,\s*([A-Z]{2}[0-9]{2}[A-Z0-9 ]+?)(?=\s*,|\s*$)/i';
+        // Free-text fallback: direction-aware tag search in remittance_information[].
+        // DBIT: "To account, <IBAN...>" (ING-RO business format)
+        // CRDT: "From account, <IBAN...>" (mirror of the same format on the inbound side)
+        //
+        // Everything after the tag is normalized (whitespace stripped, uppercased)
+        // and prefix-matched against the known own-account IBAN set. One match →
+        // own-account hit. Zero or multiple → no classification for this line.
+        $tagPattern = $cdi === 'CRDT'
+            ? '/\bFrom account,\s*(.*)/i'
+            : '/\bTo account,\s*(.*)/i';
 
         $remittances = $ebTransaction['remittance_information'] ?? null;
         if (! is_array($remittances)) {
@@ -170,8 +180,24 @@ final class OwnAccountClassifier
             if (! is_string($line)) {
                 continue;
             }
-            if (preg_match($pattern, $line, $m) === 1) {
-                return $m[1];
+            if (preg_match($tagPattern, $line, $m) !== 1) {
+                continue;
+            }
+
+            $normalizedRemainder = self::normalizeIban($m[1]);
+            if ($normalizedRemainder === '') {
+                continue;
+            }
+
+            $hits = [];
+            foreach ($ibanMap as $normalizedIban => $_) {
+                if (str_starts_with($normalizedRemainder, $normalizedIban)) {
+                    $hits[] = $normalizedIban;
+                }
+            }
+
+            if (count($hits) === 1) {
+                return $hits[0];
             }
         }
 
