@@ -107,7 +107,7 @@ class StatusRenderer
                 'transfer' => (string) $b->queuedCounts['transfer'],
                 'tracking' => (string) $b->queuedCounts['tracking'],
                 // GH #16 — suppressed cross-source top-up destination legs.
-                'transfer_dropped' => (string) ($b->queuedCounts['transfer_dropped'] ?? 0),
+                'transfer_dropped' => (string) $b->queuedCounts['transfer_dropped'],
             ];
         }
 

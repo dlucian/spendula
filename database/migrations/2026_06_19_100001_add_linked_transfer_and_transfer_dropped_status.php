@@ -33,10 +33,10 @@ return new class extends Migration
             // is the correct FK policy for a nullable self-referential link.
             $table->foreignUuid('linked_transfer_id')
                 ->nullable()
+                ->after('skip_reason')
                 ->references('id')
                 ->on('transactions')
-                ->nullOnDelete()
-                ->after('skip_reason');
+                ->nullOnDelete();
 
             $table->index('linked_transfer_id');
         });
