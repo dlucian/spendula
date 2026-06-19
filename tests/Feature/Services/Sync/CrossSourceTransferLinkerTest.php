@@ -10,13 +10,10 @@ use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Models\Transaction;
 use App\Services\Sync\CrossSourceTransferLinker;
-use App\Services\Sync\TopupLink;
 use App\Services\Sync\TopupLinkLoader;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
-use Mockery;
-use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
@@ -42,10 +39,10 @@ class CrossSourceTransferLinkerTest extends TestCase
 
     private BankAccount $destinationAccount;
 
-    private TopupLink $link;
-
-    /** @var MockInterface&TopupLinkLoader */
     private TopupLinkLoader $loader;
+
+    /** @var list<string> Temp config dirs created for real TopupLinkLoader instances; cleaned in tearDown. */
+    private array $tempConfigDirs = [];
 
     protected function setUp(): void
     {
@@ -95,28 +92,50 @@ class CrossSourceTransferLinkerTest extends TestCase
             'last_seen_at' => Carbon::now(),
         ]);
 
-        $this->link = new TopupLink(
-            fundingBankSlug: 'bcp',
-            fundingCardLast4: '5962',
-            fundingMarker: 'Revolut',
-            destinationAccountRef: 'Revolut EUR',
-            applePayTokens: ['2798'],
-            amountToleranceDays: 3,
-            resolvedDestinationId: $this->destinationAccount->id,
-        );
-
-        $this->loader = Mockery::mock(TopupLinkLoader::class);
-        $this->loader->allows('links')->andReturn([$this->link]);
+        // Real TopupLinkLoader (the class is final by design; the codebase
+        // convention is real instances over mocks — see OwnAccountClassifierTest).
+        // The loader resolves destination_account_ref against the seeded accounts.
+        $this->loader = $this->makeLoader([[
+            'funding_bank_slug' => 'bcp',
+            'funding_card_last4' => '5962',
+            'funding_marker' => 'Revolut',
+            'destination_account_ref' => 'Revolut EUR',
+            'apple_pay_tokens' => ['2798'],
+            'amount_tolerance_days' => 3,
+        ]]);
     }
 
     protected function tearDown(): void
     {
-        Mockery::close();
+        foreach ($this->tempConfigDirs as $dir) {
+            @unlink($dir.'/own-account-topups.json');
+            @rmdir($dir);
+        }
+        $this->tempConfigDirs = [];
         parent::tearDown();
     }
 
     // -------------------------------------------------------------------------
     // Helpers
+
+    /**
+     * Build a real TopupLinkLoader backed by a temp config dir holding the given
+     * links (matches the production JSON shape). Pass [] for the no-mapping case.
+     *
+     * @param  list<array<string, mixed>>  $links
+     */
+    private function makeLoader(array $links): TopupLinkLoader
+    {
+        $dir = sys_get_temp_dir().'/spendula-topup-'.Str::uuid()->toString();
+        mkdir($dir, 0700, true);
+        $this->tempConfigDirs[] = $dir;
+        file_put_contents(
+            $dir.'/own-account-topups.json',
+            (string) json_encode(['links' => $links]),
+        );
+
+        return new TopupLinkLoader($dir);
+    }
 
     private function makeLinker(): CrossSourceTransferLinker
     {
@@ -335,9 +354,8 @@ class CrossSourceTransferLinkerTest extends TestCase
 
     public function test_no_matching_link_config_no_link(): void
     {
-        // Loader returns empty list.
-        $emptyLoader = Mockery::mock(TopupLinkLoader::class);
-        $emptyLoader->allows('links')->andReturn([]);
+        // Loader returns empty list (no mapping configured).
+        $emptyLoader = $this->makeLoader([]);
         $linker = new CrossSourceTransferLinker($emptyLoader);
 
         $funding = $this->seedFundingTx();
