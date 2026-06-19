@@ -140,13 +140,29 @@ class MatchUpdateOrInsert
 
                 $match = $candidate;
             } elseif ($untaggedMatches->count() > 1) {
-                /** @var int $maxOccurrence */
-                $maxOccurrence = (int) $untaggedMatches->max('occurrence');
+                // GH #16 re-sync dedup fix: when 2+ untagged rows share the same normalized
+                // counterparty, also compare the incoming raw counterparty against each stored
+                // row's raw counterparty. An exact raw match means this is a re-sync of that
+                // specific row — dedupe/update it rather than inserting a spurious new occurrence.
+                // Only when no existing row matches the incoming raw is the third occurrence real.
+                $exactRawMatches = $untaggedMatches->filter(
+                    fn (Transaction $t) => $this->extractRawCounterpartyFromStored($t) === $parsed->rawCounterparty,
+                );
 
-                $result = $this->insert($parsed, occurrence: $maxOccurrence + 1);
-                $this->maybeLink($account, $result->transaction, $parsed);
+                if ($exactRawMatches->count() >= 1) {
+                    /** @var Transaction $match */
+                    $match = $exactRawMatches->first();
+                    // Fall through to the if ($match instanceof Transaction) update path below.
+                } else {
+                    // Genuinely distinct incoming raw — insert as a new occurrence.
+                    /** @var int $maxOccurrence */
+                    $maxOccurrence = (int) $untaggedMatches->max('occurrence');
 
-                return $result;
+                    $result = $this->insert($parsed, occurrence: $maxOccurrence + 1);
+                    $this->maybeLink($account, $result->transaction, $parsed);
+
+                    return $result;
+                }
             } elseif (! $incomingHasRef) {
                 // No untagged candidate, but incoming has no ref either. Fall
                 // back to tagged candidates (the absent→present-then-absent

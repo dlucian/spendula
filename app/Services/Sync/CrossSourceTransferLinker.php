@@ -54,10 +54,17 @@ use Illuminate\Support\Facades\Log;
  *
  * ## Already-pushed guard
  *
- *   If the destination leg was already pushed (status=pushed), we do NOT retro-
- *   edit it. We promote the funding leg to transfer and log a cross_source.late_pair
- *   warning for manual convergence. The operator is responsible for reversing or
- *   reconciling the YNAB duplicate manually in that case.
+ *   Two symmetric cases — both log cross_source.late_pair for manual convergence:
+ *
+ *   Destination already pushed: the funding leg is promoted to transfer as normal,
+ *   but the destination leg is left untouched. The operator must reverse or reconcile
+ *   the YNAB duplicate manually.
+ *
+ *   Funding already pushed: the funding leg is NOT modified at all (retrogressing a
+ *   pushed row's status from pushed→transfer would corrupt the YNAB-already-sent row).
+ *   The destination phantom is still suppressed (status=transfer_dropped,
+ *   linked_transfer_id=funding.id) so YNAB does not receive a standalone credit.
+ *   The link is asymmetric: destination→funding is set, funding→destination is not.
  *
  * ## Not applicable
  *
@@ -230,6 +237,9 @@ final class CrossSourceTransferLinker
      *
      * Match key: (destination_account_id, abs(amount_milliunits), currency, ±window days,
      * CRDT, not-yet-linked, not terminal).
+     *
+     * Collects all token-matching candidates, then delegates to selectClosest() for
+     * deterministic, ambiguity-safe selection.
      */
     private function findDestinationCounterpart(Transaction $funding, TopupLink $link): ?Transaction
     {
@@ -253,12 +263,15 @@ final class CrossSourceTransferLinker
                 $date->copy()->subDays($windowDays)->toDateString(),
                 $date->copy()->addDays($windowDays)->toDateString(),
             ])
+            ->orderBy('booking_date')
+            ->orderBy('id')
             ->get();
 
+        /** @var list<Transaction> $matched */
+        $matched = [];
         foreach ($candidates as $candidate) {
             $remittance = $candidate->remittance_information;
             if (! is_string($remittance) || $remittance === '') {
-                // Also check raw_payload remittance_information
                 $rawRemittance = $this->extractRawRemittance($candidate->raw_payload);
                 if ($rawRemittance === null) {
                     continue;
@@ -266,11 +279,11 @@ final class CrossSourceTransferLinker
                 $remittance = $rawRemittance;
             }
             if ($link->matchesDestinationRemittance($remittance)) {
-                return $candidate;
+                $matched[] = $candidate;
             }
         }
 
-        return null;
+        return $this->selectClosest($matched, $funding);
     }
 
     /**
@@ -279,6 +292,9 @@ final class CrossSourceTransferLinker
      *
      * Match key: (funding_account_id per bank_slug, abs(amount_milliunits), currency,
      * ±window days, DBIT, not-yet-linked, not terminal).
+     *
+     * Collects all descriptor-matching candidates, then delegates to selectClosest()
+     * for deterministic, ambiguity-safe selection.
      */
     private function findFundingCounterpart(Transaction $destination, TopupLink $link): ?Transaction
     {
@@ -313,24 +329,28 @@ final class CrossSourceTransferLinker
                 $date->copy()->subDays($windowDays)->toDateString(),
                 $date->copy()->addDays($windowDays)->toDateString(),
             ])
+            ->orderBy('booking_date')
+            ->orderBy('id')
             ->get();
 
+        /** @var list<Transaction> $matched */
+        $matched = [];
         foreach ($candidates as $candidate) {
             $rawCounterparty = $this->extractRawCounterpartyFromPayload($candidate->raw_payload);
             if ($link->matchesFundingDescriptor($rawCounterparty)) {
-                return $candidate;
+                $matched[] = $candidate;
             }
         }
 
-        return null;
+        return $this->selectClosest($matched, $destination);
     }
 
     /**
      * Apply the link: promote the funding leg to transfer and drop the destination leg.
      *
-     * Checks the already-pushed guard before modifying the destination leg.
-     * If the destination was already pushed: promote the funding leg but leave the
-     * destination alone, log a cross_source.late_pair warning.
+     * Two already-pushed guards (see class docblock) — both log cross_source.late_pair:
+     *   - Funding pushed: leave funding entirely untouched; still suppress destination.
+     *   - Destination pushed: promote funding as normal; leave destination alone.
      */
     private function applyLink(
         Transaction $funding,
@@ -346,6 +366,27 @@ final class CrossSourceTransferLinker
             : $link->destinationAccountRef;
 
         $transferName = mb_substr("{$prefix} : {$destLabel}", 0, 64);
+
+        // Guard: if the funding leg was already pushed, do NOT modify it. Regressing a
+        // pushed row's status back to transfer would corrupt the row already sent to YNAB.
+        // We still suppress the destination phantom so YNAB never sees a standalone credit.
+        if ($funding->status === TransactionStatus::Pushed) {
+            if ($destination->status !== TransactionStatus::Pushed) {
+                $destination->status = TransactionStatus::TransferDropped;
+                $destination->linked_transfer_id = $funding->id;
+                $destination->save();
+            }
+
+            Log::warning('CrossSourceTransferLinker: funding leg already pushed — destination suppressed but funding left as-is for manual convergence.', [
+                'event' => 'cross_source.late_pair',
+                'funding_transaction_id' => $funding->id,
+                'destination_transaction_id' => $destination->id,
+                'funding_amount_milliunits' => $funding->amount_milliunits,
+                'currency' => $funding->currency,
+            ]);
+
+            return;
+        }
 
         // Promote the funding leg to transfer.
         $funding->status = TransactionStatus::Transfer;
@@ -379,6 +420,60 @@ final class CrossSourceTransferLinker
             'currency' => $funding->currency,
             'window_days' => $link->amountToleranceDays,
         ]);
+    }
+
+    /**
+     * Select the single best match from a set of descriptor-filtered candidates,
+     * preferring the one whose booking_date is closest to the reference transaction's
+     * booking_date.
+     *
+     * 0 candidates → null (no counterpart found yet).
+     * 1 candidate → return it.
+     * 2+ candidates tied for minimum day-distance → log cross_source.ambiguous_match
+     *   and return null. Never guess on a financial pairing: leave unlinked for manual
+     *   review rather than risk linking the wrong legs.
+     *
+     * @param  list<Transaction>  $matched
+     */
+    private function selectClosest(array $matched, Transaction $reference): ?Transaction
+    {
+        if ($matched === []) {
+            return null;
+        }
+        if (count($matched) === 1) {
+            return $matched[0];
+        }
+
+        $referenceDate = $reference->booking_date;
+        $minDiff = PHP_INT_MAX;
+        /** @var Transaction|null $best */
+        $best = null;
+        $tied = false;
+
+        foreach ($matched as $candidate) {
+            $diff = (int) $candidate->booking_date->diffInDays($referenceDate);
+            if ($diff < $minDiff) {
+                $minDiff = $diff;
+                $best = $candidate;
+                $tied = false;
+            } elseif ($diff === $minDiff) {
+                $tied = true;
+            }
+        }
+
+        if ($tied) {
+            Log::warning('CrossSourceTransferLinker: ambiguous match — two or more candidates equidistant in date; leaving unlinked for manual review.', [
+                'event' => 'cross_source.ambiguous_match',
+                'incoming_transaction_id' => $reference->id,
+                'amount_milliunits' => abs($reference->amount_milliunits),
+                'currency' => $reference->currency,
+                'candidate_count' => count($matched),
+            ]);
+
+            return null;
+        }
+
+        return $best;
     }
 
     /**

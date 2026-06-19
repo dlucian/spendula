@@ -538,6 +538,69 @@ class CrossSourceTransferLinkerTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Scenario 12: Funding leg already pushed → destination suppressed, funding unchanged.
+
+    public function test_funding_already_pushed_suppresses_destination_but_leaves_funding_unchanged(): void
+    {
+        $funding = $this->seedFundingTx(status: TransactionStatus::Pushed);
+        $originalCounterparty = $funding->counterparty_name;
+
+        // Destination arrives after funding was already pushed to YNAB.
+        $destination = $this->seedDestinationTx();
+        $this->makeLinker()->link(
+            $this->destinationAccount,
+            $destination,
+            rawCounterparty: 'Apple Pay',
+            remittanceInfo: 'Apple Pay Top-Up by *2798',
+        );
+
+        $funding->refresh();
+        $destination->refresh();
+
+        // Funding must remain pushed — must never be regressed to transfer.
+        $this->assertSame(TransactionStatus::Pushed, $funding->status);
+        $this->assertSame($originalCounterparty, $funding->counterparty_name);
+        $this->assertNull($funding->linked_transfer_id);
+
+        // Destination must be suppressed so YNAB does not see a standalone credit.
+        $this->assertSame(TransactionStatus::TransferDropped, $destination->status);
+        $this->assertSame($funding->id, $destination->linked_transfer_id);
+    }
+
+    // -------------------------------------------------------------------------
+    // Scenario 13: Two equidistant destination candidates → ambiguity guard, no link.
+
+    public function test_ambiguous_equidistant_destination_candidates_leaves_pair_unlinked(): void
+    {
+        $funding = $this->seedFundingTx(date: '2026-06-10');
+
+        // Two destination candidates equidistant from the funding date (both 2 days away,
+        // within the 3-day settlement window). Both match the apple_pay_token.
+        $dest1 = $this->seedDestinationTx(date: '2026-06-08');  // 2 days before funding
+        $dest2 = $this->seedDestinationTx(date: '2026-06-12');  // 2 days after funding
+
+        // Link attempt via the funding leg — should detect ambiguity and leave all unchanged.
+        $this->makeLinker()->link(
+            $this->fundingAccount,
+            $funding,
+            rawCounterparty: 'COMPRA 5962 Revolut 2180 Dublin IE',
+            remittanceInfo: 'COMPRA 5962 Revolut 2180 Dublin IE',
+        );
+
+        $funding->refresh();
+        $dest1->refresh();
+        $dest2->refresh();
+
+        // No link applied — ambiguous pair left for manual review; no exception thrown.
+        $this->assertSame(TransactionStatus::Fetched, $funding->status);
+        $this->assertNull($funding->linked_transfer_id);
+        $this->assertSame(TransactionStatus::Fetched, $dest1->status);
+        $this->assertNull($dest1->linked_transfer_id);
+        $this->assertSame(TransactionStatus::Fetched, $dest2->status);
+        $this->assertNull($dest2->linked_transfer_id);
+    }
+
+    // -------------------------------------------------------------------------
     // Scenario 11: Skipped / tracking transactions are ignored by linker.
 
     public function test_skipped_transaction_ignored_by_linker(): void

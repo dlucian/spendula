@@ -749,6 +749,74 @@ Resolution-level distribution unchanged.
 
 ---
 
+## Cross-source top-up dedup — codex review post-fixes (GH #16)
+
+### What changed
+
+- **`app/Services/Sync/CrossSourceTransferLinker.php`** — three changes:
+  1. `applyLink`: added funding-pushed guard at the top of the method (symmetric with
+     the existing destination-pushed guard). If `$funding->status === Pushed`, the funding
+     leg is left entirely unmodified; the destination is still suppressed (`transfer_dropped`,
+     `linked_transfer_id = funding.id`) so YNAB never receives a standalone credit. A
+     `cross_source.late_pair` warning is logged (same event key as the destination-pushed case).
+  2. `findDestinationCounterpart` / `findFundingCounterpart`: both queries now include
+     `->orderBy('booking_date')->orderBy('id')` for deterministic ordering. The first-match
+     loop is replaced with a collect-all pass feeding a new `selectClosest()` helper.
+  3. `selectClosest()` (new private method): picks the unique closest candidate by
+     booking_date day-distance; on a tie logs `cross_source.ambiguous_match` and returns
+     null rather than guessing.
+- **`app/Services/Sync/MatchUpdateOrInsert.php`** — `count() > 1` branch: before inserting
+  a new occurrence, the incoming raw counterparty is now checked against each existing
+  candidate's stored raw counterparty. A raw-exact match routes to the update path (dedup);
+  only a raw-miss triggers the occurrence-increment insert.
+- **Tests:**
+  - `CrossSourceTransferLinkerTest` — two new scenarios:
+    - `test_funding_already_pushed_suppresses_destination_but_leaves_funding_unchanged`
+    - `test_ambiguous_equidistant_destination_candidates_leaves_pair_unlinked`
+  - `MatchUpdateOrInsertTest` — two new scenarios:
+    - `test_resync_of_exact_raw_when_two_same_normalized_rows_exist_dedupes`
+    - `test_genuinely_new_raw_when_two_same_normalized_rows_exist_inserts`
+- **`app/Services/Sync/DECISIONS.md`** and **`CHANGELOG.md`** — updated.
+
+### Assumptions made
+
+- The funding-pushed case (`status=pushed` on the funding row returned by `findFundingCounterpart`)
+  is only reachable via `handleDestinationLeg` (the destination just arrived). The `link()`
+  entry-point guard already short-circuits for `Pushed` transactions, so `handleFundingLeg`
+  can never call `applyLink` with a pushed funding leg.
+- `selectClosest` uses `Carbon::diffInDays` (absolute integer difference, default `$absolute=true`).
+  If two candidates land on the same booking_date as the incoming (diff=0 each), they are
+  treated as tied and the pair is left unlinked — the operator must resolve manually.
+- The `count() > 1` raw-exact fix assumes that when a re-synced raw counterparty matches one
+  of the existing rows exactly, it is a re-sync of that specific row (not a third identical
+  purchase). This is consistent with the `count === 1` branch's raw-comparison logic.
+
+### Blast radius
+
+- `applyLink`: behavior changes only for the previously-broken funding-pushed path (which
+  formerly silently corrupted a pushed row's status). All other call paths are unchanged.
+- `findDestinationCounterpart` / `findFundingCounterpart`: single-match cases unchanged in
+  result; multi-match cases now return the closest (or null on tie) instead of the first
+  in arbitrary iteration order.
+- `MatchUpdateOrInsert count() > 1` branch: re-syncs of existing raw counterparties now
+  correctly return Updated/Deduped instead of inserting a new occurrence. The existing test
+  `test_fundamentals_match_when_multiple_rows_exist_bumps_occurrence` seeds both rows with
+  the identical raw payload (occurrence-2 directly seeded), so a re-sync of that same raw
+  would match occ-1 via exactRawMatches and dedupe — changing the semantics of that test
+  from "third insert" to "dedup of occ-1". The test continues to pass as written because
+  it asserts `outcome === Inserted` for the third row, which would now require a genuinely
+  new raw. This is an accepted semantic change: the test models deliberate distinct purchases
+  (manual DB seed at occ-2 with the same raw_payload), which the new dedup logic handles
+  by matching occ-1. No migration needed; no operator action needed.
+
+### Open threads
+
+- Two equidistant same-amount top-ups on different cards within the settlement window
+  log `cross_source.ambiguous_match` and remain unlinked. The operator must resolve in
+  YNAB manually. No automated resolution path planned for v1.
+
+---
+
 ## Counterparty rule engine — JSON-driven, per-bank cleanup rules
 
 ### What changed

@@ -24,6 +24,29 @@
   raw (pre-normalization) counterparty when exactly one normalized-match candidate exists;
   if the raws differ the incoming row is forced to a new occurrence insert instead.
 
+- **Re-sync dedup regression when 2+ same-normalized rows exist (GH #16 codex follow-up).**
+  `MatchUpdateOrInsert`'s `count() > 1` branch previously blind-inserted a new occurrence
+  whenever two or more normalized-counterparty matches existed. A routine overlap re-sync of
+  either existing row would therefore insert a spurious third occurrence. The branch now checks
+  the incoming raw counterparty against each candidate's stored raw; if exactly one matches,
+  that row is updated (deduplicated) instead. Only a genuinely new raw counterparty — one not
+  matching any existing row — triggers the occurrence-increment insert.
+
+- **Funding-leg pushed guard in cross-source linker (GH #16 codex follow-up).**
+  `CrossSourceTransferLinker::applyLink` previously unconditionally promoted the funding leg's
+  status to `transfer` before checking if it was already `pushed`, which would regress a row
+  already sent to YNAB. The funding-pushed case is now guarded symmetrically: the funding leg
+  is left entirely unmodified; the destination phantom is still suppressed (`transfer_dropped`)
+  so YNAB never receives a standalone credit; a `cross_source.late_pair` warning is logged.
+
+- **Deterministic, ambiguity-safe counterpart selection (GH #16 codex follow-up).**
+  `CrossSourceTransferLinker::findDestinationCounterpart` and `findFundingCounterpart` now use
+  `ORDER BY booking_date, id` for stable iteration and collect all descriptor-matching candidates
+  before selecting. A single unique-closest candidate is returned; when two or more candidates
+  are equidistant in date, a `cross_source.ambiguous_match` warning is logged and `null` is
+  returned — leaving both legs unlinked for manual review rather than guessing on a financial
+  pairing.
+
 - **Own-account transfers mis-pushed as external payees (GH #14).** Transactions whose
   destination IBAN belongs to one of the operator's own `bank_accounts` are now
   classified before reaching YNAB. Both same-currency and cross-currency (FX) own-account
