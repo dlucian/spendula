@@ -141,20 +141,28 @@ class MatchUpdateOrInsert
                 $match = $candidate;
             } elseif ($untaggedMatches->count() > 1) {
                 // GH #16 re-sync dedup fix: when 2+ untagged rows share the same normalized
-                // counterparty, also compare the incoming raw counterparty against each stored
-                // row's raw counterparty. An exact raw match means this is a re-sync of that
-                // specific row — dedupe/update it rather than inserting a spurious new occurrence.
-                // Only when no existing row matches the incoming raw is the third occurrence real.
+                // counterparty, compare the incoming raw counterparty against each stored row's
+                // raw counterparty to tell a re-sync apart from a genuinely new occurrence.
+                //
+                //   exactly 1 exact-raw match → this is a re-sync of that one specific distinct
+                //     row (e.g. the "COMPRA 5962 …" leg when "5962" and "9800" both exist) →
+                //     dedupe/update it rather than inserting a spurious duplicate.
+                //   0 exact-raw matches → the incoming raw is new under this normalized form →
+                //     insert as a new occurrence (a genuinely distinct transaction).
+                //   2+ exact-raw matches → multiple identical rows already exist; we cannot tell
+                //     which one (if any) this re-syncs, so we keep the repo's safety bias of
+                //     never silently dropping a real row and INSERT a new occurrence (SPEC §6.3,
+                //     test_fundamentals_match_when_multiple_rows_exist_bumps_occurrence).
                 $exactRawMatches = $untaggedMatches->filter(
                     fn (Transaction $t) => $this->extractRawCounterpartyFromStored($t) === $parsed->rawCounterparty,
                 );
 
-                if ($exactRawMatches->count() >= 1) {
+                if ($exactRawMatches->count() === 1) {
                     /** @var Transaction $match */
                     $match = $exactRawMatches->first();
                     // Fall through to the if ($match instanceof Transaction) update path below.
                 } else {
-                    // Genuinely distinct incoming raw — insert as a new occurrence.
+                    // 0 matches (new distinct raw) or 2+ identical (preserve, never drop) → insert.
                     /** @var int $maxOccurrence */
                     $maxOccurrence = (int) $untaggedMatches->max('occurrence');
 

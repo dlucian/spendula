@@ -451,7 +451,10 @@ final class CrossSourceTransferLinker
         $tied = false;
 
         foreach ($matched as $candidate) {
-            $diff = (int) $candidate->booking_date->diffInDays($referenceDate);
+            // abs() is required: Carbon's diffInDays is signed by direction, so a candidate
+            // before the reference and one equally far after would otherwise read as -N and +N
+            // and never register as a tie.
+            $diff = abs((int) $candidate->booking_date->diffInDays($referenceDate));
             if ($diff < $minDiff) {
                 $minDiff = $diff;
                 $best = $candidate;
