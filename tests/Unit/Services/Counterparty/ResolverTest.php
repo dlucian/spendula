@@ -77,6 +77,43 @@ class ResolverTest extends TestCase
         $this->assertSame(64, mb_strlen($resolved->name));
     }
 
+    // -----------------------------------------------------------------------
+    // No-mislabel regression (Major 3)
+    // The Resolver must NEVER rewrite a real external beneficiary into an
+    // unrelated real entity (e.g. "BUGETUL DE STAT").
+    // -----------------------------------------------------------------------
+
+    public function test_external_beneficiary_resolves_to_itself_not_unrelated_entity(): void
+    {
+        // SEPA-correct L0: creditor.name for a DBIT is returned verbatim.
+        // No rule should rewrite a legitimate company name to a different entity.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'ACME SRL'],
+            'debtor' => null,
+        ]);
+
+        $this->assertSame('ACME SRL', $resolved->name);
+        $this->assertSame(0, $resolved->level);
+        $this->assertNotSame('BUGETUL DE STAT', $resolved->name);
+    }
+
+    public function test_unparseable_remittance_resolves_to_own_text_not_unrelated_entity(): void
+    {
+        // When no structured counterparty is present, L2 returns the
+        // trimmed remittance text itself — never a randomly-matched entity.
+        $resolved = $this->resolver->resolve([
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'debtor' => null,
+            'remittance_information' => ['OP 42 / diverse cheltuieli'],
+        ]);
+
+        $this->assertSame(2, $resolved->level);
+        $this->assertSame('OP 42 / diverse cheltuieli', $resolved->name);
+        $this->assertNotSame('BUGETUL DE STAT', $resolved->name);
+    }
+
     public function test_level_3_additional_information_fallback(): void
     {
         $resolved = $this->resolver->resolve([

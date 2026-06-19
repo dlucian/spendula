@@ -192,7 +192,7 @@ class AccountsDeactivateCommand extends Command
             return self::FAILURE;
         }
 
-        $confirmQuestion = $unpushed > 0 && $force
+        $confirmQuestion = $unpushed > 0
             ? "Deactivate this account? {$unpushed} approved/transfer transaction(s) will become DEAD: "
               .'not pushable, not visible in spendula:status, until the account is reactivated. (y/N)'
             : 'Deactivate this account? Sync will stop attempting it. (y/N)';

@@ -2,8 +2,10 @@
 
 namespace App\Console\Commands\Spendula;
 
+use App\Enums\TransactionStatus;
 use App\Models\BankAccount;
 use App\Models\Transaction;
+use App\Services\Counterparty\OwnAccountClassifier;
 use App\Services\Counterparty\Resolver;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
@@ -33,8 +35,16 @@ class CounterpartyRecomputeCommand extends Command
      * advisory lock — concurrent syncs stomp on the same rows but this
      * command only runs manually after a Resolver tuning, so the race
      * window is operator-controlled.
+     *
+     * Own-account promotion: after re-resolving the counterparty name, the
+     * OwnAccountClassifier is applied. Both same-currency and cross-currency
+     * (FX) own-account rows in status=fetched are promoted to transfer.
+     * Rows in any other status (approved, skipped, pushed, tracking, transfer)
+     * are never status-mutated here — SPEC §5.3 no-regress. Already-pushed
+     * own-account rows must be corrected manually in YNAB; YNAB deduplicates
+     * on import_id so the historical push stands as-is.
      */
-    public function handle(Resolver $resolver): int
+    public function handle(Resolver $resolver, OwnAccountClassifier $classifier): int
     {
         $bankSlug = (string) $this->option('bank');
         $dryRun = (bool) $this->option('dry-run');
@@ -56,7 +66,7 @@ class CounterpartyRecomputeCommand extends Command
         $levelChanged = 0;
         $nameChanged = 0;
 
-        $query->chunkById(200, function ($chunk) use ($resolver, $dryRun, &$scanned, &$levelChanged, &$nameChanged, &$beforeLevels, &$afterLevels) {
+        $query->chunkById(200, function ($chunk) use ($resolver, $classifier, $dryRun, &$scanned, &$levelChanged, &$nameChanged, &$beforeLevels, &$afterLevels) {
             /** @var iterable<Transaction> $chunk */
             foreach ($chunk as $tx) {
                 $scanned++;
@@ -65,10 +75,33 @@ class CounterpartyRecomputeCommand extends Command
                 $txBankSlug = $tx->bankAccount?->bank_slug;
                 $resolved = $resolver->resolve($tx->raw_payload, $txBankSlug);
 
+                // Apply own-account name override (same logic as MatchUpdateOrInsert).
+                $newName = $resolved->name;
+                $ownAccountTransfer = false;
+
+                $source = $tx->bankAccount;
+                if ($source !== null) {
+                    $classification = $classifier->classify($tx->raw_payload, $source);
+                    if ($classification !== null) {
+                        // Both same-currency and cross-currency (FX) own-account moves
+                        // resolve to a transfer (see DECISIONS.md — GH #14 FX-as-transfer
+                        // reversal). The sameCurrency flag no longer drives a name split;
+                        // all own-account classifications get the Transfer prefix.
+                        $prefix = (string) config('spendula.own_account.transfer_prefix', 'Transfer');
+                        $newName = mb_substr("{$prefix} : {$classification->destinationLabel()}", 0, 64);
+                        $ownAccountTransfer = true;
+                    }
+                }
+
                 $afterLevels[$resolved->level] = ($afterLevels[$resolved->level] ?? 0) + 1;
 
                 $levelDiff = $tx->counterparty_resolution_level !== $resolved->level;
-                $nameDiff = ($tx->counterparty_name ?? '') !== $resolved->name;
+                $nameDiff = ($tx->counterparty_name ?? '') !== $newName;
+
+                // Promote fetched→transfer for own-account rows (both same-currency and FX).
+                // Never mutate status beyond fetched (approved/skipped/pushed/tracking/transfer
+                // are operator-reviewed or terminal states — SPEC §5.3 no-regress).
+                $statusPromotion = $ownAccountTransfer && $tx->status === TransactionStatus::Fetched;
 
                 if ($levelDiff) {
                     $levelChanged++;
@@ -77,9 +110,12 @@ class CounterpartyRecomputeCommand extends Command
                     $nameChanged++;
                 }
 
-                if (! $dryRun && ($levelDiff || $nameDiff)) {
-                    $tx->counterparty_name = $resolved->name;
+                if (! $dryRun && ($levelDiff || $nameDiff || $statusPromotion)) {
+                    $tx->counterparty_name = $newName;
                     $tx->counterparty_resolution_level = $resolved->level;
+                    if ($statusPromotion) {
+                        $tx->status = TransactionStatus::Transfer;
+                    }
                     $tx->save();
                 }
             }

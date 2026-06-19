@@ -18,6 +18,11 @@ final class ParsedIncomingTransaction
 {
     /**
      * @param  array<string, mixed>  $rawPayload
+     * @param  bool  $ownAccountTransfer  True when OwnAccountClassifier confirmed a
+     *                                    same-currency own-account transfer. Drives
+     *                                    status=transfer on insert (after cutoff/tracking
+     *                                    guards). False for all other transactions,
+     *                                    including cross-currency FX own-account moves.
      */
     public function __construct(
         public readonly BankAccount $account,
@@ -35,5 +40,6 @@ final class ParsedIncomingTransaction
         public readonly int $counterpartyResolutionLevel,
         public readonly ?string $remittanceInformation,
         public readonly Carbon $now,
+        public readonly bool $ownAccountTransfer = false,
     ) {}
 }

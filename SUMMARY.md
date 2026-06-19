@@ -1,5 +1,199 @@
 # Latest task summary
 
+## FX own-account moves reversed to transfers (GH #14 follow-up)
+
+### What changed
+
+- **`app/Services/Sync/MatchUpdateOrInsert.php`** — collapsed FX and same-currency
+  own-account branches: both now set `counterparty_name = "Transfer : <dest>"` and
+  `ownAccountTransfer = true`. Added `buildFxSuffix()` private helper that appends
+  `[FX] <orig_amount> <orig_ccy> @ <rate>` to the remittance when the EB payload
+  carries a `currency_exchange.instructed_amount` + `currency_exchange.exchange_rate`
+  object (SPEC §5.6). No fabrication when the field is absent.
+- **`app/Console/Commands/Spendula/CounterpartyRecomputeCommand.php`** — mirrored the
+  same collapse: FX and same-currency both get the Transfer prefix and the
+  `ownAccountTransfer` flag; status promotion to `transfer` now fires for both.
+- **`app/Services/Counterparty/OwnAccountClassification.php`** — updated `$sameCurrency`
+  docblock to reflect the new caller behavior (both values are now transfer; the flag
+  is kept for optional memo-enrichment use).
+- **`config/spendula.php`** — removed `own_account.fx_payee` key and the associated
+  comment. Updated section comment to reflect FX = transfer.
+- **`.env.example`** — removed `SPENDULA_OWN_ACCOUNT_FX_PAYEE` and its comment.
+- **`tests/Feature/Services/Sync/MatchUpdateOrInsertTest.php`** — renamed and updated
+  the FX test (`test_own_account_different_currency_dbit_free_text_classified_as_transfer`):
+  now asserts `status=transfer`, `counterparty_name="Transfer : ING SRL RON"`,
+  `amount_milliunits = -235000`. Added two new tests: FX with `currency_exchange` payload
+  (asserts `[FX]` suffix in remittance), FX without it (asserts no `[FX]` suffix).
+- **`tests/Feature/Commands/Spendula/CounterpartyRecomputeCommandTest.php`** — renamed
+  same-currency test to `test_recompute_promotes_fetched_own_account_same_currency_to_transfer_status`.
+  Added `test_recompute_promotes_fetched_fx_own_account_to_transfer_status`: seeds a
+  "Currency Exchange" row with RON destination, asserts recompute promotes to transfer
+  and renames to "Transfer : ING SRL RON".
+- **`DECISIONS.md`** — appended 2026-06-19 ADR entry documenting the reversal and why.
+- **`CHANGELOG.md`** — updated GH #14 bullet to reflect FX = transfer and the
+  `[FX]` memo enrichment; noted `SPENDULA_OWN_ACCOUNT_FX_PAYEE` removal.
+
+### Assumptions made
+
+- The EB `currency_exchange` payload field is present only when the bank populates it
+  (per SPEC §5.6 — "populated by some banks for cross-currency transactions"). ING-RO
+  free-text own-account transfers do not carry it; no fabrication occurs in those cases.
+- The `currency_exchange.instructed_amount.{amount, currency}` and
+  `currency_exchange.exchange_rate` sub-fields are the relevant EB schema fields based
+  on SPEC §5.6 wording and the Enable Banking API conventions. No live FX payload was
+  available to confirm against; the helper returns null on any missing/malformed field
+  rather than fabricating data.
+- `OwnAccountClassification.sameCurrency` is retained (not removed) — it is still
+  meaningful for optional memo-enrichment branching and removing it would be a larger
+  API change with no benefit at this scale.
+
+### Blast radius
+
+- **Sync behavior change:** FX own-account moves that previously landed as
+  `status=fetched` / `counterparty_name="Currency Exchange"` now land as
+  `status=transfer` / `counterparty_name="Transfer : <dest>"`. Already-synced rows
+  are NOT retroactively updated on re-sync (status is immutable after insert).
+- **Backfill:** `spendula:counterparty:recompute` will promote existing FX own-account
+  rows at status=fetched to transfer. Approved/skipped/pushed rows are invariant.
+- **Config change:** `SPENDULA_OWN_ACCOUNT_FX_PAYEE` is no longer read. Operators who
+  set it in `.env` must remove it; leaving it in place is harmless (key gone from config).
+
+### Open threads
+
+- Already-pushed FX own-account rows ("Currency Exchange" payee in YNAB) must be
+  corrected manually in YNAB. The historical push stands via YNAB's `import_id`
+  deduplication; `spendula:counterparty:recompute` fixes the local DB row only.
+
+---
+
+## Own-account classifier — codex review round 1 edge-case fixes (GH #14)
+
+### What changed
+
+- **`app/Services/Counterparty/OwnAccountClassifier.php`** — two fixes:
+  1. **(Major 1) Ambiguity guard moved before source exclusion.** Count of active accounts matching the normalized IBAN is now checked *before* filtering out the source. If count ≠ 1, return null immediately. If count == 1 and sole candidate is the source (self-transfer), return null. Fixes the prior bug where source + one other active account sharing an IBAN would produce count == 1 after source exclusion and wrongly classify the other account.
+  2. **(Major 2) Spaced-IBAN regex.** Free-text patterns `"To account,"`/`"From account,"` now capture `[A-Z0-9 ]+?` (spaces allowed) with lookahead `(?=\s*,|\s*$)`. `normalizeIban()` strips spaces before the DB lookup.
+- **`app/Services/Counterparty/OwnAccountClassification.php`** — **(Minor)** new `destinationLabel(): string` method. Returns `trim(display_name)` when non-blank, else falls back to `destinationIban`. Prevents `"Transfer : "` when `display_name` is null/empty/whitespace.
+- **`app/Services/Sync/MatchUpdateOrInsert.php`** — **(Minor)** use `$classification->destinationLabel()`.
+- **`app/Console/Commands/Spendula/CounterpartyRecomputeCommand.php`** — **(Minor)** same call-site fix.
+- **`tests/Feature/Services/Counterparty/OwnAccountClassifierTest.php`** — four new tests: Major 1 regression guard (source + another active account share IBAN → null), Major 2 DBIT spaced IBAN, Major 2 CRDT spaced IBAN, Minor blank display_name falls back to IBAN.
+- **`tests/Unit/Services/Counterparty/ResolverTest.php`** — two new tests (Major 3, test-only): external beneficiary resolves to itself NOT "BUGETUL DE STAT"; unparseable remittance resolves to own text NOT "BUGETUL DE STAT".
+
+No migrations, no new commands, no new routes. Full suite 477/477.
+
+### Assumptions made
+
+- Postgres session timezone is UTC during test run. Tests run against real Postgres `spendula_test`.
+- "BUGETUL DE STAT" mislabeling confirmed YNAB-side auto-match (prior session verified via `git log -p --all -S "Stat RO"` returning empty). Major 3 tests codify this invariant.
+
+### Blast radius
+
+- `OwnAccountClassifier::classify()`: behavioral change only for source + another active account sharing an IBAN (was wrongly classified, now null).
+- `MatchUpdateOrInsert` and `CounterpartyRecomputeCommand`: behavioral change only when `display_name` is blank/whitespace (was "Transfer : ", now uses IBAN as suffix).
+
+### Open threads
+
+- Rows already pushed with blank display_name have "Transfer : " in YNAB; operator can run `spendula:counterparty:recompute` locally and rename in YNAB manually.
+
+---
+
+## Own-account transfer/FX classifier (GH #14)
+
+### What changed
+
+- **`app/Services/Counterparty/OwnAccountClassification.php`** (new) — immutable DTO
+  returned when a transaction destination IBAN matches an own account.
+- **`app/Services/Counterparty/OwnAccountClassifier.php`** (new) — DB-aware service.
+  Extracts destination IBAN from the EB transaction (structured `creditor_account.iban`
+  / `debtor_account.iban` first, then free-text "To account," / "From account,"
+  fallback, direction-aware per CDI). Matches against a normalized-IBAN map of active
+  `bank_accounts`, excluding the source account. Returns null for external, ambiguous
+  (duplicate active IBAN), inactive, or self-transfer cases.
+- **`app/Services/Sync/ParsedIncomingTransaction.php`** — added `bool $ownAccountTransfer`
+  (default false). True only for same-currency own-account inserts.
+- **`app/Services/Sync/MatchUpdateOrInsert.php`** — injected `OwnAccountClassifier`;
+  calls `classify()` after `resolve()` in `parseIncoming()`. For same-currency own-account:
+  overrides `counterpartyName` to `"<prefix> : <dest display_name>"` and sets
+  `ownAccountTransfer = true`. For FX: overrides name to `fx_payee`. `insert()` status
+  match extended: cutoff → Skipped, Tracking → Tracking, `ownAccountTransfer` → Transfer,
+  else → Fetched.
+- **`app/Console/Commands/Spendula/CounterpartyRecomputeCommand.php`** — injected
+  `OwnAccountClassifier` via method injection. Applies same name override after
+  `resolve()`. Promotes `fetched → transfer` for same-currency own-account rows only;
+  never touches approved/skipped/pushed/tracking/transfer. Honors `--dry-run`.
+- **`config/spendula.php`** — added `own_account.transfer_prefix` (env
+  `SPENDULA_OWN_ACCOUNT_TRANSFER_PREFIX`, default "Transfer") and `own_account.fx_payee`
+  (env `SPENDULA_OWN_ACCOUNT_FX_PAYEE`, default "Currency Exchange").
+- **`.env.example`** — added `SPENDULA_OWN_ACCOUNT_TRANSFER_PREFIX` and
+  `SPENDULA_OWN_ACCOUNT_FX_PAYEE` entries with comments.
+- **`tests/Feature/Services/Counterparty/OwnAccountClassifierTest.php`** (new) — 12
+  feature tests covering DBIT/CRDT free-text, structured field priority, null cases
+  (no IBAN, external IBAN, inactive, self-transfer), duplicate-IBAN ambiguity, and
+  `normalizeIban`.
+- **`tests/Feature/Services/Sync/MatchUpdateOrInsertTest.php`** — 10 new cases:
+  same-currency DBIT transfer, FX DBIT, external beneficiary no override, unparseable
+  remittance (no-mislabel regression), structured-iban priority, self-exclusion,
+  inactive account, duplicate IBAN ambiguity, CRDT free-text, pre-cutoff skipped.
+- **`tests/Feature/Commands/Spendula/CounterpartyRecomputeCommandTest.php`** — 3 new
+  cases: backfill promotes fetched→transfer, no status mutation for approved, dry-run
+  no-write. Updated `seedTransactionFor` to accept optional `$status` parameter.
+- **`DECISIONS.md`** — GH #14 entry (own-account classifier design, YNAB mislabel
+  forensics, SPEC §8 FX divergence, alternatives considered).
+- **`CHANGELOG.md`** — new file, "Fixed" entry for GH #14.
+- **`SUMMARY.md`** — this file.
+
+No migrations. No new artisan commands. No new HTTP routes.
+
+### Assumptions made
+
+- `bank_accounts.iban` is nullable and NOT unique (schema confirmed — no unique index
+  exists; the duplicate-active-IBAN guard is load-bearing).
+- The ING-RO free-text format "To account, <IBAN>" and "From account, <IBAN>" is
+  the real production format for rows whose `creditor_account` / `debtor_account`
+  structured fields are null. This matches the 13 problem rows seen by the operator.
+- YNAB deduplicated the 13 already-pushed rows by `import_id` — the historical
+  "Bugetul de Stat RO" YNAB payee was a YNAB-side fuzzy auto-match, not a value
+  Spendula produced. Confirmed by `git log -p --all -S "Stat RO"` returning empty.
+- Postgres session timezone is UTC (per `config/database.php` default).
+- Tests run against real Postgres `spendula_test`.
+
+### Blast radius
+
+- **`MatchUpdateOrInsert`** constructor signature changed: new required `OwnAccountClassifier`
+  parameter added. Any direct instantiation (outside the IoC container) must pass it.
+  Affected: the test setUp (updated), and any future test that constructs `MatchUpdateOrInsert`
+  directly. Commands that resolve it from the container are unaffected (Laravel
+  auto-resolves `OwnAccountClassifier` since it has no constructor dependencies).
+- **`CounterpartyRecomputeCommand::handle()`** now promotes `fetched → transfer` for
+  same-currency own-account rows. Running `spendula:counterparty:recompute` on an
+  existing DB with pre-existing own-account rows at status=fetched will change their
+  status. This is intentional and is the primary purpose of the backfill command for
+  this issue. Pre-cutoff/approved/skipped/pushed/tracking rows are invariant.
+- **`ParsedIncomingTransaction`** has a new optional constructor parameter
+  `$ownAccountTransfer`. Any direct construction outside the MatchUpdateOrInsert parser
+  (e.g., test helpers that build `ParsedIncomingTransaction` directly) must be audited;
+  since it has a default of `false`, existing callers compile without modification.
+
+### Open threads
+
+- Already-pushed own-account rows (the 13 historical ones) must be corrected in YNAB
+  by hand. `spendula:counterparty:recompute` updates the local DB row's `counterparty_name`
+  and `status`, but YNAB deduplicates on `import_id` — the historical YNAB transaction
+  stays under the old payee.
+- YNAB's native transfer pair (`transfer_account_id`) is explicitly out of scope for
+  v1 (SPEC §8). The `status=transfer` + `[TRANSFER]` memo convention is the v1 bridge;
+  the operator converts to a native pair manually in YNAB.
+- Banks other than ING-RO that encode own-account transfers differently (e.g., via a
+  non-standard `internal_transfer_id` field) will not be detected by the current
+  free-text patterns. Extend `OwnAccountClassifier::extractDestinationIban()` when a
+  second bank's format is confirmed.
+- The CRDT "From account," pattern is implemented and tested against a synthetic fixture;
+  it has not been observed against a live ING-RO CRDT own-account transfer (CRDT moves
+  go to the destination account's sync, which may not be in `spendula_dev` yet). The
+  Mock ASPSP does not exercise this path in the current fixture set.
+
+---
+
 ## Out-of-band rule install: `spendula:rules:add` command (GH #8)
 
 ### What changed

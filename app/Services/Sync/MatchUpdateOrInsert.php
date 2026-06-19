@@ -7,6 +7,7 @@ use App\Enums\TransactionStatus;
 use App\Enums\YnabAccountType;
 use App\Models\BankAccount;
 use App\Models\Transaction;
+use App\Services\Counterparty\OwnAccountClassifier;
 use App\Services\Counterparty\Resolver;
 use App\Services\Money\Money;
 use Illuminate\Support\Carbon;
@@ -39,7 +40,10 @@ use InvalidArgumentException;
  */
 class MatchUpdateOrInsert
 {
-    public function __construct(private readonly Resolver $resolver) {}
+    public function __construct(
+        private readonly Resolver $resolver,
+        private readonly OwnAccountClassifier $classifier,
+    ) {}
 
     /**
      * @param  array<string, mixed>  $ebTransaction
@@ -186,11 +190,44 @@ class MatchUpdateOrInsert
         $rawCounterparty = $this->extractRawCounterparty($ebTransaction);
         $resolved = $this->resolver->resolve($ebTransaction, $account->bank_slug);
 
+        // Post-resolution own-account override. Runs after the Resolver so the
+        // resolver's IBAN-independent output (L0–L4 level) is preserved in
+        // counterparty_resolution_level; only counterparty_name is overridden here.
+        $classification = $this->classifier->classify($ebTransaction, $account);
+        $counterpartyName = $resolved->name;
+        $ownAccountTransfer = false;
+
+        if ($classification !== null) {
+            // Both same-currency and cross-currency (FX) own-account moves resolve
+            // to a transfer. The budget is single-currency EUR; foreign-currency
+            // own accounts are held in EUR-equivalent, so the EUR debit/credit is
+            // the correct budget event and should be booked as a transfer pair.
+            // See DECISIONS.md — GH #14 FX-as-transfer reversal entry.
+            $prefix = (string) config('spendula.own_account.transfer_prefix', 'Transfer');
+            $counterpartyName = mb_substr("{$prefix} : {$classification->destinationLabel()}", 0, 64);
+            $ownAccountTransfer = true;
+        }
+
         $remittance = null;
         if (isset($ebTransaction['remittance_information']) && is_array($ebTransaction['remittance_information'])) {
             $parts = array_filter($ebTransaction['remittance_information'], 'is_string');
             if ($parts !== []) {
                 $remittance = implode(' · ', $parts);
+            }
+        }
+
+        // FX memo enrichment: when this is a cross-currency own-account transfer,
+        // append original-currency detail to the remittance if the EB payload
+        // carries a `currency_exchange` object (populated by some banks on
+        // cross-currency transactions per SPEC §5.6). The field is optional —
+        // if absent (e.g. ING-RO free-text transfers, which encode everything in
+        // remittance_information), the remittance is left as-is; no fabrication.
+        if ($classification !== null && ! $classification->sameCurrency) {
+            $fxSuffix = $this->buildFxSuffix($ebTransaction);
+            if ($fxSuffix !== null) {
+                $remittance = $remittance !== null
+                    ? $remittance.' · '.$fxSuffix
+                    : $fxSuffix;
             }
         }
 
@@ -216,10 +253,11 @@ class MatchUpdateOrInsert
             currency: $currency,
             creditDebitIndicator: $cdi,
             rawCounterparty: $rawCounterparty,
-            counterpartyName: $resolved->name,
+            counterpartyName: $counterpartyName,
             counterpartyResolutionLevel: $resolved->level,
             remittanceInformation: $remittance,
             now: $now,
+            ownAccountTransfer: $ownAccountTransfer,
         );
     }
 
@@ -229,6 +267,7 @@ class MatchUpdateOrInsert
         $status = match (true) {
             $beforeCutoff => TransactionStatus::Skipped,
             $parsed->account->ynab_account_type === YnabAccountType::Tracking => TransactionStatus::Tracking,
+            $parsed->ownAccountTransfer => TransactionStatus::Transfer,
             default => TransactionStatus::Fetched,
         };
 
@@ -424,5 +463,50 @@ class MatchUpdateOrInsert
     private function extractRawCounterpartyFromStored(Transaction $transaction): string
     {
         return $this->extractRawCounterparty($transaction->raw_payload);
+    }
+
+    /**
+     * Build a compact FX detail suffix from the EB transaction's `currency_exchange`
+     * object (SPEC §5.6). Returns null when the field is absent or incomplete.
+     *
+     * EB shape (when populated by the bank):
+     *   currency_exchange.instructed_amount.amount   — original amount in source currency
+     *   currency_exchange.instructed_amount.currency — source currency code
+     *   currency_exchange.exchange_rate              — rate applied
+     *
+     * Format emitted: `[FX] <amount> <CCY> @ <rate>` (e.g. `[FX] 1050.00 RON @ 0.20120000`).
+     * Both fields are required; if either is missing, null is returned to avoid
+     * partial or misleading information in the memo. Rate is rendered as-is from
+     * the payload (a string); amount likewise. No rounding applied here — the bank's
+     * reported values are authoritative.
+     *
+     * @param  array<string, mixed>  $ebTransaction
+     */
+    private function buildFxSuffix(array $ebTransaction): ?string
+    {
+        $cx = $ebTransaction['currency_exchange'] ?? null;
+        if (! is_array($cx)) {
+            return null;
+        }
+
+        $instructed = $cx['instructed_amount'] ?? null;
+        if (! is_array($instructed)) {
+            return null;
+        }
+
+        $origAmount = $instructed['amount'] ?? null;
+        $origCurrency = $instructed['currency'] ?? null;
+
+        if (! is_string($origAmount) || trim($origAmount) === ''
+            || ! is_string($origCurrency) || trim($origCurrency) === '') {
+            return null;
+        }
+
+        $rate = $cx['exchange_rate'] ?? null;
+        if (! is_string($rate) && ! is_numeric($rate)) {
+            return null;
+        }
+
+        return sprintf('[FX] %s %s @ %s', trim($origAmount), strtoupper(trim($origCurrency)), (string) $rate);
     }
 }
