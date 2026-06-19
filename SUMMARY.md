@@ -1,5 +1,71 @@
 # Latest task summary
 
+## FX own-account moves reversed to transfers (GH #14 follow-up)
+
+### What changed
+
+- **`app/Services/Sync/MatchUpdateOrInsert.php`** — collapsed FX and same-currency
+  own-account branches: both now set `counterparty_name = "Transfer : <dest>"` and
+  `ownAccountTransfer = true`. Added `buildFxSuffix()` private helper that appends
+  `[FX] <orig_amount> <orig_ccy> @ <rate>` to the remittance when the EB payload
+  carries a `currency_exchange.instructed_amount` + `currency_exchange.exchange_rate`
+  object (SPEC §5.6). No fabrication when the field is absent.
+- **`app/Console/Commands/Spendula/CounterpartyRecomputeCommand.php`** — mirrored the
+  same collapse: FX and same-currency both get the Transfer prefix and the
+  `ownAccountTransfer` flag; status promotion to `transfer` now fires for both.
+- **`app/Services/Counterparty/OwnAccountClassification.php`** — updated `$sameCurrency`
+  docblock to reflect the new caller behavior (both values are now transfer; the flag
+  is kept for optional memo-enrichment use).
+- **`config/spendula.php`** — removed `own_account.fx_payee` key and the associated
+  comment. Updated section comment to reflect FX = transfer.
+- **`.env.example`** — removed `SPENDULA_OWN_ACCOUNT_FX_PAYEE` and its comment.
+- **`tests/Feature/Services/Sync/MatchUpdateOrInsertTest.php`** — renamed and updated
+  the FX test (`test_own_account_different_currency_dbit_free_text_classified_as_transfer`):
+  now asserts `status=transfer`, `counterparty_name="Transfer : ING SRL RON"`,
+  `amount_milliunits = -235000`. Added two new tests: FX with `currency_exchange` payload
+  (asserts `[FX]` suffix in remittance), FX without it (asserts no `[FX]` suffix).
+- **`tests/Feature/Commands/Spendula/CounterpartyRecomputeCommandTest.php`** — renamed
+  same-currency test to `test_recompute_promotes_fetched_own_account_same_currency_to_transfer_status`.
+  Added `test_recompute_promotes_fetched_fx_own_account_to_transfer_status`: seeds a
+  "Currency Exchange" row with RON destination, asserts recompute promotes to transfer
+  and renames to "Transfer : ING SRL RON".
+- **`DECISIONS.md`** — appended 2026-06-19 ADR entry documenting the reversal and why.
+- **`CHANGELOG.md`** — updated GH #14 bullet to reflect FX = transfer and the
+  `[FX]` memo enrichment; noted `SPENDULA_OWN_ACCOUNT_FX_PAYEE` removal.
+
+### Assumptions made
+
+- The EB `currency_exchange` payload field is present only when the bank populates it
+  (per SPEC §5.6 — "populated by some banks for cross-currency transactions"). ING-RO
+  free-text own-account transfers do not carry it; no fabrication occurs in those cases.
+- The `currency_exchange.instructed_amount.{amount, currency}` and
+  `currency_exchange.exchange_rate` sub-fields are the relevant EB schema fields based
+  on SPEC §5.6 wording and the Enable Banking API conventions. No live FX payload was
+  available to confirm against; the helper returns null on any missing/malformed field
+  rather than fabricating data.
+- `OwnAccountClassification.sameCurrency` is retained (not removed) — it is still
+  meaningful for optional memo-enrichment branching and removing it would be a larger
+  API change with no benefit at this scale.
+
+### Blast radius
+
+- **Sync behavior change:** FX own-account moves that previously landed as
+  `status=fetched` / `counterparty_name="Currency Exchange"` now land as
+  `status=transfer` / `counterparty_name="Transfer : <dest>"`. Already-synced rows
+  are NOT retroactively updated on re-sync (status is immutable after insert).
+- **Backfill:** `spendula:counterparty:recompute` will promote existing FX own-account
+  rows at status=fetched to transfer. Approved/skipped/pushed rows are invariant.
+- **Config change:** `SPENDULA_OWN_ACCOUNT_FX_PAYEE` is no longer read. Operators who
+  set it in `.env` must remove it; leaving it in place is harmless (key gone from config).
+
+### Open threads
+
+- Already-pushed FX own-account rows ("Currency Exchange" payee in YNAB) must be
+  corrected manually in YNAB. The historical push stands via YNAB's `import_id`
+  deduplication; `spendula:counterparty:recompute` fixes the local DB row only.
+
+---
+
 ## Own-account classifier — codex review round 1 edge-case fixes (GH #14)
 
 ### What changed

@@ -40,18 +40,17 @@ return [
         'atm_cash_label' => env('SPENDULA_ATM_CASH_LABEL') ?: 'ATM Cash',
     ],
 
-    // GH #14 — own-account transfer / FX classifier labels.
+    // GH #14 — own-account transfer classifier prefix.
     // When OwnAccountClassifier detects that the destination IBAN belongs to
-    // one of the operator's own bank_accounts:
-    //   same-currency → counterparty_name = "<transfer_prefix> : <dest name>"
-    //   different-currency → counterparty_name = fx_payee
-    // Same-currency rows also get status=transfer so PayloadBuilder prepends
-    // [TRANSFER] to the YNAB memo and the operator converts them to a native
-    // transfer pair in YNAB (SPEC §8 v1 model). Cross-currency rows stay
-    // fetched — the FX conversion is a genuine budget event.
+    // one of the operator's own bank_accounts (same-currency OR cross-currency
+    // FX move), the counterparty_name becomes "<transfer_prefix> : <dest name>"
+    // and status=transfer. Both directions are booked as transfers because the
+    // budget is single-currency EUR and foreign-currency own accounts are held
+    // in EUR-equivalent (see DECISIONS.md — GH #14 FX-as-transfer reversal).
+    // PayloadBuilder prepends [TRANSFER] to the YNAB memo; the operator converts
+    // each pair to a native YNAB transfer (SPEC §8 v1 model).
     'own_account' => [
         'transfer_prefix' => env('SPENDULA_OWN_ACCOUNT_TRANSFER_PREFIX') ?: 'Transfer',
-        'fx_payee' => env('SPENDULA_OWN_ACCOUNT_FX_PAYEE') ?: 'Currency Exchange',
     ],
 
     // GH #39 — auto-decision rule guards. Names that resolve to one of

@@ -37,9 +37,9 @@ class CounterpartyRecomputeCommand extends Command
      * window is operator-controlled.
      *
      * Own-account promotion: after re-resolving the counterparty name, the
-     * OwnAccountClassifier is applied. For same-currency own-account rows
-     * still in status=fetched the status is promoted to transfer. Rows
-     * in any other status (approved, skipped, pushed, tracking, transfer)
+     * OwnAccountClassifier is applied. Both same-currency and cross-currency
+     * (FX) own-account rows in status=fetched are promoted to transfer.
+     * Rows in any other status (approved, skipped, pushed, tracking, transfer)
      * are never status-mutated here — SPEC §5.3 no-regress. Already-pushed
      * own-account rows must be corrected manually in YNAB; YNAB deduplicates
      * on import_id so the historical push stands as-is.
@@ -77,19 +77,19 @@ class CounterpartyRecomputeCommand extends Command
 
                 // Apply own-account name override (same logic as MatchUpdateOrInsert).
                 $newName = $resolved->name;
-                $ownAccountSameCurrency = false;
+                $ownAccountTransfer = false;
 
                 $source = $tx->bankAccount;
                 if ($source !== null) {
                     $classification = $classifier->classify($tx->raw_payload, $source);
                     if ($classification !== null) {
-                        if ($classification->sameCurrency) {
-                            $prefix = (string) config('spendula.own_account.transfer_prefix', 'Transfer');
-                            $newName = mb_substr("{$prefix} : {$classification->destinationLabel()}", 0, 64);
-                            $ownAccountSameCurrency = true;
-                        } else {
-                            $newName = (string) config('spendula.own_account.fx_payee', 'Currency Exchange');
-                        }
+                        // Both same-currency and cross-currency (FX) own-account moves
+                        // resolve to a transfer (see DECISIONS.md — GH #14 FX-as-transfer
+                        // reversal). The sameCurrency flag no longer drives a name split;
+                        // all own-account classifications get the Transfer prefix.
+                        $prefix = (string) config('spendula.own_account.transfer_prefix', 'Transfer');
+                        $newName = mb_substr("{$prefix} : {$classification->destinationLabel()}", 0, 64);
+                        $ownAccountTransfer = true;
                     }
                 }
 
@@ -98,10 +98,10 @@ class CounterpartyRecomputeCommand extends Command
                 $levelDiff = $tx->counterparty_resolution_level !== $resolved->level;
                 $nameDiff = ($tx->counterparty_name ?? '') !== $newName;
 
-                // Promote fetched→transfer for same-currency own-account rows only.
+                // Promote fetched→transfer for own-account rows (both same-currency and FX).
                 // Never mutate status beyond fetched (approved/skipped/pushed/tracking/transfer
                 // are operator-reviewed or terminal states — SPEC §5.3 no-regress).
-                $statusPromotion = $ownAccountSameCurrency && $tx->status === TransactionStatus::Fetched;
+                $statusPromotion = $ownAccountTransfer && $tx->status === TransactionStatus::Fetched;
 
                 if ($levelDiff) {
                     $levelChanged++;

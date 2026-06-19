@@ -20,8 +20,10 @@ final class OwnAccountClassification
         public readonly string $destinationIban,
         /**
          * True when the transaction currency matches the destination account's
-         * currency. Same-currency → status=transfer; different-currency → FX
-         * labelling with status unchanged.
+         * currency. Both same-currency and different-currency (FX) own-account
+         * moves resolve to a transfer; this flag is retained so callers can
+         * optionally append FX detail to the memo (see DECISIONS.md — GH #14
+         * FX-as-transfer reversal).
          */
         public readonly bool $sameCurrency,
     ) {}

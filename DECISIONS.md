@@ -220,3 +220,54 @@ The `count === 1` guard prevents any ambiguous match from overriding.
   "To account, <IBAN>" (e.g., `internal_transfer_id` field) requires a new extraction
   path in `OwnAccountClassifier::extractDestinationIban()`. The current free-text
   patterns are ING-RO–specific; structured `creditor_account.iban` is universal.
+
+---
+
+## 2026-06-19 — FX own-account moves reversed to transfers (GH #14 follow-up)
+
+**Decision.** Reverse the 2026-06-18 FX behavior: cross-currency own-account moves
+now resolve to a transfer (`counterparty_name = "<prefix> : <dest>"`, `status = transfer`)
+exactly like same-currency own-account moves. The `SPENDULA_OWN_ACCOUNT_FX_PAYEE` config
+key and env var are removed.
+
+**Why the reversal.** The operator's budget is single-currency EUR. Foreign-currency own
+accounts (e.g. an ING RON account) are held in YNAB as EUR-equivalent tracking accounts.
+The EUR debit on the source side is the budget event — it should be booked as a transfer
+to the matching EUR-equivalent account, not as a "Currency Exchange" outflow. This matches
+the operator's established manual convention (EUR amount at source, original amount + rate
+in the YNAB memo). The prior decision's stated reason ("YNAB cannot model a clean
+cross-currency transfer") was incorrect for this budget setup: the tracking account IS the
+EUR-equivalent, so a native YNAB transfer pair is both correct and desired.
+
+**Memo enrichment.** When the EB payload carries a `currency_exchange` object (SPEC §5.6
+— populated by some banks on cross-currency transactions), `MatchUpdateOrInsert` appends
+a compact `[FX] <orig_amount> <orig_ccy> @ <rate>` suffix to the remittance memo. This
+preserves the original-currency detail the operator previously added by hand. If the field
+is absent (ING-RO free-text rows do not carry it; they encode everything in
+`remittance_information`), the memo is left as-is — no fabrication.
+
+**Alternatives considered.**
+
+1. *Keep FX as fetched with a "Currency Exchange" payee.* The original 2026-06-18
+   decision. Reversed because it misrepresented the budget model: the FX outflow is not
+   a payee transaction, it is a transfer between own EUR-equivalent accounts.
+2. *Add a separate FX-transfer status.* Rejected: unnecessary complexity. The existing
+   `transfer` status is correct; YNAB handles the pair semantics via the [TRANSFER] memo
+   prefix and the operator's manual pairing step (SPEC §8 v1 model).
+
+**Constraints.** `OwnAccountClassification.sameCurrency` is retained (not removed) so
+callers can still branch on it for memo enrichment; removing it would be a larger API
+change with no material benefit at this scale.
+
+**Consequences.**
+
+- **Easier:** all own-account moves (same-currency and FX) now land as transfers
+  automatically; the operator no longer sees "Currency Exchange" rows in the review queue.
+- **Easier:** `spendula:counterparty:recompute` backfills FX rows that were previously
+  left at `fetched` / "Currency Exchange" up to `transfer` / "Transfer : <dest>".
+- **Harder:** `SPENDULA_OWN_ACCOUNT_FX_PAYEE` is no longer a supported env var (removed
+  from config and `.env.example`). Operators who set it explicitly must remove it from
+  their `.env`; it will be silently ignored if left in place (the config key is gone).
+- **Harder:** already-pushed FX own-account rows that landed as "Currency Exchange" must
+  be corrected in YNAB manually. `spendula:counterparty:recompute` updates the local row
+  but cannot retroactively change the YNAB-side payee after push.

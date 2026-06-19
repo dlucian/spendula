@@ -341,9 +341,13 @@ class MatchUpdateOrInsertTest extends TestCase
 
     /**
      * DBIT, different currency (EUR tx → RON destination), IBAN in free-text.
-     * Acceptance criterion #2: status=fetched, counterparty_name="Currency Exchange".
+     * Acceptance criterion #2 (revised): FX own-account moves now resolve to a
+     * transfer — same behaviour as same-currency. Status=transfer,
+     * counterparty_name="Transfer : <dest display_name>", amount = source EUR value.
+     * (Previously these were status=fetched with counterparty_name="Currency Exchange";
+     * reversed per DECISIONS.md GH #14 FX-as-transfer entry.)
      */
-    public function test_own_account_different_currency_dbit_free_text_classified_as_fx(): void
+    public function test_own_account_different_currency_dbit_free_text_classified_as_transfer(): void
     {
         BankAccount::query()->create([
             'bank_slug' => 'mock',
@@ -369,9 +373,86 @@ class MatchUpdateOrInsertTest extends TestCase
         ]));
 
         $this->assertSame(ApplyOutcome::Inserted, $result->outcome);
-        $this->assertSame(TransactionStatus::Fetched, $result->transaction->status);
-        $this->assertSame('Currency Exchange', $result->transaction->counterparty_name);
+        // FX own-account moves are now transfers (same as same-currency).
+        $this->assertSame(TransactionStatus::Transfer, $result->transaction->status);
+        $this->assertSame('Transfer : ING SRL RON', $result->transaction->counterparty_name);
+        // Amount is the source EUR value — no conversion.
+        $this->assertSame(-235_000, $result->transaction->amount_milliunits);
         $this->assertNotSame('ACME SRL', $result->transaction->counterparty_name);
+        $this->assertNotSame('Currency Exchange', $result->transaction->counterparty_name);
+    }
+
+    /**
+     * FX own-account move with a currency_exchange payload field: the `[FX]` detail
+     * suffix should be appended to remittance_information when the field is present.
+     */
+    public function test_own_account_fx_with_currency_exchange_payload_appends_fx_memo(): void
+    {
+        BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'ING SRL RON',
+            'iban' => 'RO00BANK0000000000000002',
+            'currency' => 'RON',
+            'is_base_currency' => false,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'fxmemo1',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => null,
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '235.00', 'currency' => 'EUR'],
+            'remittance_information' => [
+                'To account, RO00BANK0000000000000002',
+            ],
+            'currency_exchange' => [
+                'instructed_amount' => ['amount' => '1175.00', 'currency' => 'RON'],
+                'exchange_rate' => '5.00000000',
+            ],
+        ]));
+
+        $this->assertSame(TransactionStatus::Transfer, $result->transaction->status);
+        $this->assertSame('Transfer : ING SRL RON', $result->transaction->counterparty_name);
+        // FX suffix must be appended after the standard remittance.
+        $this->assertStringContainsString('[FX] 1175.00 RON @ 5.00000000', (string) $result->transaction->remittance_information);
+    }
+
+    /**
+     * FX own-account move WITHOUT a currency_exchange payload field: remittance
+     * is left as-is; no fabrication of FX detail.
+     */
+    public function test_own_account_fx_without_currency_exchange_payload_no_fx_suffix(): void
+    {
+        BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'ING SRL RON',
+            'iban' => 'RO00BANK0000000000000002',
+            'currency' => 'RON',
+            'is_base_currency' => false,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $result = $this->apply->apply($this->account, $this->sampleTransaction([
+            'entry_reference' => 'fxmemo2',
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => null,
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '235.00', 'currency' => 'EUR'],
+            'remittance_information' => [
+                'To account, RO00BANK0000000000000002, schimb valutar',
+            ],
+            // No currency_exchange field — should not fabricate FX detail.
+        ]));
+
+        $this->assertSame(TransactionStatus::Transfer, $result->transaction->status);
+        $this->assertStringNotContainsString('[FX]', (string) $result->transaction->remittance_information);
     }
 
     /**

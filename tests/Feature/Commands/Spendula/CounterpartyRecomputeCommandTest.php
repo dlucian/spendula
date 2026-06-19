@@ -123,7 +123,7 @@ class CounterpartyRecomputeCommandTest extends TestCase
     /**
      * Acceptance criterion #7: fetched same-currency own-account rows promoted to transfer.
      */
-    public function test_recompute_promotes_fetched_own_account_transfer_to_transfer_status(): void
+    public function test_recompute_promotes_fetched_own_account_same_currency_to_transfer_status(): void
     {
         $source = $this->seedBankAccount('mock');
         $dest = BankAccount::query()->create([
@@ -222,6 +222,43 @@ class CounterpartyRecomputeCommandTest extends TestCase
         $tx->refresh();
         $this->assertSame(TransactionStatus::Fetched, $tx->status);
         $this->assertSame('ACME SRL', $tx->counterparty_name);
+    }
+
+    /**
+     * Acceptance criterion #7 (FX variant): fetched cross-currency own-account rows are
+     * also promoted to transfer during backfill (see DECISIONS.md — GH #14 FX-as-transfer
+     * reversal). Previously these stayed fetched with counterparty_name="Currency Exchange".
+     */
+    public function test_recompute_promotes_fetched_fx_own_account_to_transfer_status(): void
+    {
+        $source = $this->seedBankAccount('mock');
+
+        BankAccount::query()->create([
+            'bank_slug' => 'mock',
+            'display_name' => 'ING SRL RON',
+            'iban' => 'RO00BANK0000000000000053',
+            'currency' => 'RON',
+            'is_base_currency' => false,
+            'active' => true,
+            'first_linked_at' => Carbon::now(),
+            'last_seen_at' => Carbon::now(),
+        ]);
+
+        $tx = $this->seedTransactionFor($source, 'Currency Exchange', 2, [
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => null,
+            'creditor_account' => null,
+            'remittance_information' => [
+                'Beneficiary, ACME SRL, To account, RO00BANK0000000000000053, Details, schimb valutar',
+            ],
+        ]);
+
+        $this->artisan('spendula:counterparty:recompute')->assertSuccessful();
+
+        $tx->refresh();
+        $this->assertSame(TransactionStatus::Transfer, $tx->status);
+        $this->assertSame('Transfer : ING SRL RON', $tx->counterparty_name);
+        $this->assertNotSame('Currency Exchange', $tx->counterparty_name);
     }
 
     /** @param  array<string, mixed>  $rawPayload */
