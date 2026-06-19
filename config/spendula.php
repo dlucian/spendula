@@ -49,8 +49,17 @@ return [
     // in EUR-equivalent (see DECISIONS.md — GH #14 FX-as-transfer reversal).
     // PayloadBuilder prepends [TRANSFER] to the YNAB memo; the operator converts
     // each pair to a native YNAB transfer (SPEC §8 v1 model).
+    //
+    // GH #16 — topup_window_days: the ±N-day settlement window used by
+    // CrossSourceTransferLinker when searching for the counterpart leg of a
+    // cross-source card top-up. The default of 3 covers typical 1–3 day
+    // cross-bank settlement lag between a Revolut top-up booking date and the
+    // corresponding bank statement date. Override via SPENDULA_OWN_ACCOUNT_TOPUP_WINDOW
+    // for faster or slower banks. The per-link amount_tolerance_days field in
+    // own-account-topups.json takes precedence over this default when set > 0.
     'own_account' => [
         'transfer_prefix' => env('SPENDULA_OWN_ACCOUNT_TRANSFER_PREFIX') ?: 'Transfer',
+        'topup_window_days' => (int) (env('SPENDULA_OWN_ACCOUNT_TOPUP_WINDOW') ?: 3),
     ],
 
     // GH #39 — auto-decision rule guards. Names that resolve to one of

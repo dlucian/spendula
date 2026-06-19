@@ -38,7 +38,7 @@ use Illuminate\Support\Carbon;
 final class BankRow
 {
     /**
-     * @param  array{fetched: int, approved: int, transfer: int, tracking: int}  $queuedCounts
+     * @param  array{fetched: int, approved: int, transfer: int, tracking: int, transfer_dropped: int}  $queuedCounts
      */
     public function __construct(
         public readonly string $slug,

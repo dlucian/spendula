@@ -139,3 +139,43 @@ filters in both consumers, but no special-casing needed today. The
 and `ReviewSessionTest::test_queue_excludes_tracking_status_rows`
 regressions guard the structural exclusion against accidental
 relaxation of either filter.
+
+## 2026-06-19 — GH #16 codex follow-up: three post-review fixes
+
+**Decision.** Three correctness issues identified by codex review of the #16 branch:
+
+1. *Funding-pushed guard in applyLink.* `applyLink` originally promoted the funding
+   leg unconditionally before checking whether it was already pushed. The funding-pushed
+   case is now guarded at the top of `applyLink`, symmetrically with the existing
+   destination-pushed guard. The destination phantom is still suppressed in both cases
+   so YNAB never sees a standalone credit. The link is asymmetric in the funding-pushed
+   case (destination→funding is set; funding→destination is not) — this is intentional:
+   the funding row is already in YNAB's ledger and must not be edited.
+
+2. *Re-sync dedup in the count() > 1 branch.* The `MatchUpdateOrInsert` `count > 1`
+   path previously inserted a new occurrence unconditionally, so a routine overlap
+   re-sync of an existing row (when two+ same-normalized rows were present) would
+   create a spurious occurrence-3. The fix mirrors the existing count===1 raw-comparison
+   logic: if the incoming raw counterparty matches any existing row exactly, that row is
+   updated (deduplicated) instead of a new occurrence being inserted. Only a genuinely
+   new raw — matching none of the existing rows — triggers the occurrence-increment.
+
+3. *Ambiguity-safe counterpart selection.* The candidate-matching loops in
+   `findDestinationCounterpart` and `findFundingCounterpart` previously returned the
+   first match in an arbitrary iteration order. With two same-amount top-ups on the
+   same card within the window, this could mis-pair nondeterministically. The fix:
+   `ORDER BY booking_date, id` for stable iteration; collect all matches; pick the
+   unique closest by booking_date; if two+ tie, log `cross_source.ambiguous_match`
+   and return null. Never guess on a financial pairing.
+
+**Alternatives rejected.** For fix 3, picking the first in ORDER BY id would be
+deterministic but still wrong (arbitrary ID order ≠ correct pairing). Logging and
+returning null forces the operator to investigate the ambiguous pair manually, which
+is the only correct outcome when the data is genuinely ambiguous.
+
+**Consequences.**
+- A pushed funding leg that arrives after the destination has been synced (previously
+  corrupt: status regressed to transfer) now stays pushed and logs late_pair.
+- Re-syncing a known top-up no longer creates phantom occurrence-3 rows.
+- Two equidistant same-amount top-ups on the same window leave both unlinked with a
+  logged warning; manual YNAB reconciliation is required.

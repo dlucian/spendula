@@ -4,6 +4,49 @@
 
 ### Fixed
 
+- **Cross-source own-account top-up dedup (GH #16).** Card top-ups via Apple Pay
+  generate two parallel entries: a DBIT on the funding bank ("COMPRA 5962 Revolut 2180
+  Dublin IE") and a CRDT on Revolut ("Apple Pay Top-Up by *2798"). Without deduplication
+  these register as independent transactions in YNAB, inflating outflows and overstating
+  the Revolut balance. `CrossSourceTransferLinker` now links the pair: the funding-bank
+  leg is promoted to `status=transfer` with a `Transfer : <Revolut account>` counterparty;
+  the Revolut leg is marked `status=transfer_dropped` (new terminal status, excluded from
+  push). The match key is `(funding_account, destination_account, |amount|, currency, ±N days)`;
+  the account pair is resolved from a new operator-managed config file
+  (`config/own-account-topups-enabled/own-account-topups.json`). Linking is order-independent
+  and idempotent. A new self-FK `transactions.linked_transfer_id` connects both legs.
+  `spendula:status` now shows a `Dropped` column in the queued-counts table.
+
+- **Same-day/same-amount import-dedup false positive (GH #16 secondary).** Two top-ups
+  on different cards on the same day with the same amount (e.g. "COMPRA 5962 …" and
+  "COMPRA 9800 …") shared a normalized counterparty string and were collapsed — the
+  second was silently deduped into the first. `MatchUpdateOrInsert` now compares the
+  raw (pre-normalization) counterparty when exactly one normalized-match candidate exists;
+  if the raws differ the incoming row is forced to a new occurrence insert instead.
+
+- **Re-sync dedup regression when 2+ same-normalized rows exist (GH #16 codex follow-up).**
+  `MatchUpdateOrInsert`'s `count() > 1` branch previously blind-inserted a new occurrence
+  whenever two or more normalized-counterparty matches existed. A routine overlap re-sync of
+  either existing row would therefore insert a spurious third occurrence. The branch now checks
+  the incoming raw counterparty against each candidate's stored raw; if exactly one matches,
+  that row is updated (deduplicated) instead. Only a genuinely new raw counterparty — one not
+  matching any existing row — triggers the occurrence-increment insert.
+
+- **Funding-leg pushed guard in cross-source linker (GH #16 codex follow-up).**
+  `CrossSourceTransferLinker::applyLink` previously unconditionally promoted the funding leg's
+  status to `transfer` before checking if it was already `pushed`, which would regress a row
+  already sent to YNAB. The funding-pushed case is now guarded symmetrically: the funding leg
+  is left entirely unmodified; the destination phantom is still suppressed (`transfer_dropped`)
+  so YNAB never receives a standalone credit; a `cross_source.late_pair` warning is logged.
+
+- **Deterministic, ambiguity-safe counterpart selection (GH #16 codex follow-up).**
+  `CrossSourceTransferLinker::findDestinationCounterpart` and `findFundingCounterpart` now use
+  `ORDER BY booking_date, id` for stable iteration and collect all descriptor-matching candidates
+  before selecting. A single unique-closest candidate is returned; when two or more candidates
+  are equidistant in date, a `cross_source.ambiguous_match` warning is logged and `null` is
+  returned — leaving both legs unlinked for manual review rather than guessing on a financial
+  pairing.
+
 - **Own-account transfers mis-pushed as external payees (GH #14).** Transactions whose
   destination IBAN belongs to one of the operator's own `bank_accounts` are now
   classified before reaching YNAB. Both same-currency and cross-currency (FX) own-account

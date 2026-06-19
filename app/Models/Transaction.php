@@ -34,6 +34,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $pushed_at
  * @property Carbon|null $skipped_at
  * @property string|null $skip_reason
+ * @property string|null $linked_transfer_id GH #16 — nullable self-FK linking the two legs of a cross-source own-account top-up.
  * @property Carbon $first_seen_at
  * @property Carbon $last_updated_from_bank_at
  * @property Carbon $created_at
@@ -69,5 +70,19 @@ class Transaction extends Model
     public function bankAccount(): BelongsTo
     {
         return $this->belongsTo(BankAccount::class);
+    }
+
+    /**
+     * GH #16 — the other leg of a cross-source own-account top-up.
+     *
+     * For the funding leg (status=transfer): returns the destination leg (status=transfer_dropped).
+     * For the destination leg (status=transfer_dropped): returns the funding leg (status=transfer).
+     * For all other transactions: linked_transfer_id is null and this relation returns null.
+     *
+     * @return BelongsTo<Transaction, $this>
+     */
+    public function linkedTransfer(): BelongsTo
+    {
+        return $this->belongsTo(Transaction::class, 'linked_transfer_id');
     }
 }

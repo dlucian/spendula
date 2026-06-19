@@ -105,7 +105,7 @@ class StatusSnapshotBuilderTest extends TestCase
         $snapshot = (new StatusSnapshotBuilder)->build(includeMock: false);
 
         $this->assertSame(
-            ['fetched' => 0, 'approved' => 0, 'transfer' => 0, 'tracking' => 0],
+            ['fetched' => 0, 'approved' => 0, 'transfer' => 0, 'tracking' => 0, 'transfer_dropped' => 0],
             $snapshot->banks[0]->queuedCounts,
         );
     }

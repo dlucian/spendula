@@ -120,6 +120,8 @@ class StatusSnapshotBuilder
                 'approved' => (int) ($counts[TransactionStatus::Approved->value] ?? 0),
                 'transfer' => (int) ($counts[TransactionStatus::Transfer->value] ?? 0),
                 'tracking' => (int) ($counts[TransactionStatus::Tracking->value] ?? 0),
+                // GH #16 — suppressed Revolut legs; visible in status but excluded from push.
+                'transfer_dropped' => (int) ($counts[TransactionStatus::TransferDropped->value] ?? 0),
             ];
 
             // Stale-sync warning is gated: only matters for an active bank
@@ -195,6 +197,9 @@ class StatusSnapshotBuilder
             TransactionStatus::Approved->value,
             TransactionStatus::Transfer->value,
             TransactionStatus::Tracking->value,
+            // GH #16 — transfer_dropped is surfaced in the status counts so
+            // operators can see how many Revolut legs were suppressed.
+            TransactionStatus::TransferDropped->value,
         ];
 
         $rows = DB::table('transactions')

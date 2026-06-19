@@ -703,4 +703,156 @@ class MatchUpdateOrInsertTest extends TestCase
         $this->assertSame(TransactionStatus::Skipped, $result->transaction->status);
         $this->assertSame('before import cutoff', $result->transaction->skip_reason);
     }
+    // -----------------------------------------------------------------------
+    // GH #16 — same-day/same-amount dedup fix tests
+    // -----------------------------------------------------------------------
+
+    /**
+     * Regression: two genuinely distinct top-ups on different cards (same day,
+     * same amount, no entry_reference) must both survive as separate rows.
+     *
+     * Before the GH #16 fix, the second top-up was silently deduped into the
+     * first because both "COMPRA 5962 Revolut 2180" and "COMPRA 9800 Revolut 2180"
+     * normalize to the same string. After the fix, differing raw counterparties
+     * under the same normalized form trigger a force-insert.
+     */
+    public function test_two_distinct_card_topups_same_day_same_amount_both_inserted(): void
+    {
+        $topup1 = $this->sampleTransaction([
+            'entry_reference' => null,
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'COMPRA 5962 Revolut 2180 Dublin IE'],
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '200.00', 'currency' => 'EUR'],
+            'booking_date' => '2026-06-10',
+            'remittance_information' => [],
+        ]);
+
+        $topup2 = $this->sampleTransaction([
+            'entry_reference' => null,
+            'credit_debit_indicator' => 'DBIT',
+            // Different card last-4 (9800 vs 5962) — genuinely distinct transaction.
+            'creditor' => ['name' => 'COMPRA 9800 Revolut 2180 Dublin IE'],
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '200.00', 'currency' => 'EUR'],
+            'booking_date' => '2026-06-10',
+            'remittance_information' => [],
+        ]);
+
+        $result1 = $this->apply->apply($this->account, $topup1);
+        $result2 = $this->apply->apply($this->account, $topup2);
+
+        $this->assertSame(ApplyOutcome::Inserted, $result1->outcome);
+        $this->assertSame(ApplyOutcome::Inserted, $result2->outcome);
+        $this->assertSame(2, Transaction::query()->count());
+        // They are distinct rows — different ids.
+        $this->assertNotSame($result1->transaction->id, $result2->transaction->id);
+    }
+
+    // -----------------------------------------------------------------------
+    // GH #16 codex follow-up — count() > 1 branch exact-raw dedup fix
+    // -----------------------------------------------------------------------
+
+    /**
+     * Codex follow-up (GH #16): when 2+ untagged rows share the same normalized
+     * counterparty and the incoming raw counterparty matches one existing row exactly,
+     * treat it as a re-sync (dedup/update) — not a new occurrence-3 insert.
+     *
+     * Scenario: two raws that normalize identically ("revolut") are seeded at occ 1
+     * and occ 2 (via the count===1 raw-diff fix). A re-sync of the occ-1 raw must
+     * dedupe into occ 1 — not insert a spurious occ 3.
+     */
+    public function test_resync_of_exact_raw_when_two_same_normalized_rows_exist_dedupes(): void
+    {
+        $base = $this->sampleTransaction([
+            'entry_reference' => null,
+            'credit_debit_indicator' => 'DBIT',
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '50.00', 'currency' => 'EUR'],
+            'booking_date' => '2026-06-10',
+            'remittance_information' => [],
+        ]);
+
+        // Insert occ 1 (raw "REVOLUT").
+        $first = $this->apply->apply($this->account, array_replace($base, [
+            'creditor' => ['name' => 'REVOLUT'],
+        ]));
+
+        // Insert occ 2 (raw "Revolut" — different case, same normalized "revolut").
+        // The count===1 branch sees occ 1 but stored raw "REVOLUT" ≠ incoming "Revolut" → force insert occ 2.
+        $second = $this->apply->apply($this->account, array_replace($base, [
+            'creditor' => ['name' => 'Revolut'],
+        ]));
+
+        $this->assertSame(ApplyOutcome::Inserted, $first->outcome);
+        $this->assertSame(ApplyOutcome::Inserted, $second->outcome);
+        $this->assertSame(2, Transaction::query()->count());
+
+        // Re-sync occ-1 raw "REVOLUT" — must match and update occ 1, not insert occ 3.
+        $resync = $this->apply->apply($this->account, array_replace($base, [
+            'creditor' => ['name' => 'REVOLUT'],
+        ]));
+
+        $this->assertNotSame(ApplyOutcome::Inserted, $resync->outcome);
+        $this->assertSame($first->transaction->id, $resync->transaction->id);
+        $this->assertSame(2, Transaction::query()->count());
+    }
+
+    /**
+     * Codex follow-up complement (GH #16): when 2+ untagged rows share the same
+     * normalized counterparty and the incoming raw is new (matches neither existing
+     * row exactly), a new occurrence must still be inserted.
+     */
+    public function test_genuinely_new_raw_when_two_same_normalized_rows_exist_inserts(): void
+    {
+        $base = $this->sampleTransaction([
+            'entry_reference' => null,
+            'credit_debit_indicator' => 'DBIT',
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '50.00', 'currency' => 'EUR'],
+            'booking_date' => '2026-06-10',
+            'remittance_information' => [],
+        ]);
+
+        // Seed occ 1 ("REVOLUT") and occ 2 ("Revolut") — same normalized, different raw.
+        $this->apply->apply($this->account, array_replace($base, ['creditor' => ['name' => 'REVOLUT']]));
+        $this->apply->apply($this->account, array_replace($base, ['creditor' => ['name' => 'Revolut']]));
+        $this->assertSame(2, Transaction::query()->count());
+
+        // Incoming "revolut" (all-lowercase raw) normalizes the same but matches neither
+        // existing row exactly → genuinely distinct, must insert as occ 3.
+        $third = $this->apply->apply($this->account, array_replace($base, [
+            'creditor' => ['name' => 'revolut'],
+        ]));
+
+        $this->assertSame(ApplyOutcome::Inserted, $third->outcome);
+        $this->assertSame(3, $third->transaction->occurrence);
+        $this->assertSame(3, Transaction::query()->count());
+    }
+
+    /**
+     * Regression complement: truly identical rows (same raw counterparty, same everything)
+     * must still dedup — the fix must not regress the normal dedup path.
+     */
+    public function test_identical_topup_rows_still_dedup(): void
+    {
+        $topup = $this->sampleTransaction([
+            'entry_reference' => null,
+            'credit_debit_indicator' => 'DBIT',
+            'creditor' => ['name' => 'COMPRA 5962 Revolut 2180 Dublin IE'],
+            'debtor' => null,
+            'transaction_amount' => ['amount' => '200.00', 'currency' => 'EUR'],
+            'booking_date' => '2026-06-10',
+            'remittance_information' => [],
+        ]);
+
+        $result1 = $this->apply->apply($this->account, $topup);
+        // Same payload again — must dedup, not insert.
+        $result2 = $this->apply->apply($this->account, $topup);
+
+        $this->assertSame(ApplyOutcome::Inserted, $result1->outcome);
+        $this->assertSame(ApplyOutcome::Deduped, $result2->outcome);
+        $this->assertSame(1, Transaction::query()->count());
+        $this->assertSame($result1->transaction->id, $result2->transaction->id);
+    }
 }

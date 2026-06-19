@@ -106,11 +106,13 @@ class StatusRenderer
                 'approved' => (string) $b->queuedCounts['approved'],
                 'transfer' => (string) $b->queuedCounts['transfer'],
                 'tracking' => (string) $b->queuedCounts['tracking'],
+                // GH #16 — suppressed cross-source top-up destination legs.
+                'transfer_dropped' => (string) $b->queuedCounts['transfer_dropped'],
             ];
         }
 
         $output->table(
-            ['Bank', 'Fetched', 'Approved', 'Transfer', 'Tracking'],
+            ['Bank', 'Fetched', 'Approved', 'Transfer', 'Tracking', 'Dropped'],
             $rows,
         );
     }
