@@ -112,8 +112,6 @@ final class TopupLinkLoader
     }
 
     /**
-     * @param  mixed  $entry
-     *
      * @throws RuntimeException
      */
     private function parseEntry(mixed $entry, string $path, int $index): TopupLink

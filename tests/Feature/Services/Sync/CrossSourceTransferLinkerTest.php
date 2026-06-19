@@ -16,6 +16,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Mockery;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
@@ -43,7 +44,7 @@ class CrossSourceTransferLinkerTest extends TestCase
 
     private TopupLink $link;
 
-    /** @var \Mockery\MockInterface&TopupLinkLoader */
+    /** @var MockInterface&TopupLinkLoader */
     private TopupLinkLoader $loader;
 
     protected function setUp(): void
