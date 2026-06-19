@@ -16,7 +16,7 @@
   apple_pay_tokens[], amount_tolerance_days, resolvedDestinationId).
 
 - **`app/Services/Sync/TopupLinkLoader.php`** — new service. Parses and validates
-  `config/counterparty-rules-enabled/own-account-topups.json`; resolves
+  `config/own-account-topups-enabled/own-account-topups.json`; resolves
   `destination_account_ref` to a `bank_account_id` (by display_name or IBAN, active
   accounts only); caches per instance (same pattern as OwnAccountClassifier).
 
@@ -37,10 +37,10 @@
   2. *Linker invocation:* added optional `CrossSourceTransferLinker $transferLinker` constructor
      param; `maybeLink()` called after every insert and non-Deduped update.
 
-- **`config/counterparty-rules-available/own-account-topups.json`** — anonymised example
+- **`config/own-account-topups-available/own-account-topups.json`** — anonymised example
   config shipped for reference. Real values go in the `enabled/` copy.
 
-- **`config/counterparty-rules-enabled/own-account-topups.json`** — operator-managed
+- **`config/own-account-topups-enabled/own-account-topups.json`** — operator-managed
   config (anonymised example committed; replace with real entries).
 
 - **`config/spendula.php`** — added `own_account.topup_window_days` (default 3, overridable

@@ -39,11 +39,11 @@ class AppServiceProvider extends ServiceProvider
         );
 
         // GH #16 — cross-source top-up dedup. The loader reads the operator's
-        // own-account-topups.json from the same enabled/ directory as the per-bank
-        // counterparty rules; resolves destination_account_ref → bank_account_id.
+        // own-account-topups.json from config/own-account-topups-enabled/ (its own dir,
+        // separate from counterparty-rules-*); resolves destination_account_ref → bank_account_id.
         $this->app->singleton(
             TopupLinkLoader::class,
-            fn () => new TopupLinkLoader(base_path('config/counterparty-rules-enabled')),
+            fn () => new TopupLinkLoader(base_path('config/own-account-topups-enabled')),
         );
 
         $this->app->singleton(

@@ -10,7 +10,7 @@ use RuntimeException;
 
 /**
  * Loads and resolves own-account card top-up link mappings from
- * config/counterparty-rules-enabled/own-account-topups.json.
+ * config/own-account-topups-enabled/own-account-topups.json.
  *
  * Parallel to RuleLoader (bank counterparty rules) but purpose-built for the
  * cross-source topup mapping shape. Key responsibilities:

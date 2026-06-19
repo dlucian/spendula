@@ -6,7 +6,7 @@ namespace App\Services\Sync;
 
 /**
  * Value object representing a single own-account card top-up mapping loaded
- * from the operator's config/counterparty-rules-enabled/own-account-topups.json.
+ * from the operator's config/own-account-topups-enabled/own-account-topups.json.
  *
  * A TopupLink captures the three identifiers that name the same physical card /
  * top-up relationship:

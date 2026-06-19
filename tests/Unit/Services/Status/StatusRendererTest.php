@@ -260,7 +260,7 @@ class StatusRendererTest extends TestCase
             consentStatus: 'active',
             effectiveConsentStatus: 'active',
             consentWarningLevel: $consentWarningLevel,
-            queuedCounts: ['fetched' => 0, 'approved' => 0, 'transfer' => 0, 'tracking' => 0],
+            queuedCounts: ['fetched' => 0, 'approved' => 0, 'transfer' => 0, 'tracking' => 0, 'transfer_dropped' => 0],
             lastSyncedAt: Carbon::parse('2026-05-01 06:00:00'),
             lastPushedAt: null,
             lastSnapshotAt: null,

@@ -13,7 +13,7 @@
   the Revolut leg is marked `status=transfer_dropped` (new terminal status, excluded from
   push). The match key is `(funding_account, destination_account, |amount|, currency, ±N days)`;
   the account pair is resolved from a new operator-managed config file
-  (`config/counterparty-rules-enabled/own-account-topups.json`). Linking is order-independent
+  (`config/own-account-topups-enabled/own-account-topups.json`). Linking is order-independent
   and idempotent. A new self-FK `transactions.linked_transfer_id` connects both legs.
   `spendula:status` now shows a `Dropped` column in the queued-counts table.
 

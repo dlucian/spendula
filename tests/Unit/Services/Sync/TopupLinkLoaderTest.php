@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Services\Sync;
 
+use App\Models\Bank;
 use App\Models\BankAccount;
 use App\Services\Sync\TopupLink;
 use App\Services\Sync\TopupLinkLoader;
@@ -30,6 +31,20 @@ class TopupLinkLoaderTest extends TestCase
         parent::setUp();
         $this->tempDir = sys_get_temp_dir().'/spendula-topup-test-'.uniqid();
         mkdir($this->tempDir, 0755, true);
+
+        // Seed the parent Bank rows required by bank_accounts.bank_slug FK.
+        foreach (['bcp', 'revolut'] as $slug) {
+            Bank::query()->create([
+                'slug' => $slug,
+                'display_name' => ucfirst($slug),
+                'aspsp_name' => ucfirst($slug),
+                'aspsp_country' => 'PT',
+                'psu_type' => 'personal',
+                'default_currency' => 'EUR',
+                'sync_lookback_days' => 90,
+                'active' => true,
+            ]);
+        }
     }
 
     protected function tearDown(): void
