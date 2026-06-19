@@ -4,6 +4,26 @@
 
 ### Fixed
 
+- **Cross-source own-account top-up dedup (GH #16).** Card top-ups via Apple Pay
+  generate two parallel entries: a DBIT on the funding bank ("COMPRA 5962 Revolut 2180
+  Dublin IE") and a CRDT on Revolut ("Apple Pay Top-Up by *2798"). Without deduplication
+  these register as independent transactions in YNAB, inflating outflows and overstating
+  the Revolut balance. `CrossSourceTransferLinker` now links the pair: the funding-bank
+  leg is promoted to `status=transfer` with a `Transfer : <Revolut account>` counterparty;
+  the Revolut leg is marked `status=transfer_dropped` (new terminal status, excluded from
+  push). The match key is `(funding_account, destination_account, |amount|, currency, ±N days)`;
+  the account pair is resolved from a new operator-managed config file
+  (`config/counterparty-rules-enabled/own-account-topups.json`). Linking is order-independent
+  and idempotent. A new self-FK `transactions.linked_transfer_id` connects both legs.
+  `spendula:status` now shows a `Dropped` column in the queued-counts table.
+
+- **Same-day/same-amount import-dedup false positive (GH #16 secondary).** Two top-ups
+  on different cards on the same day with the same amount (e.g. "COMPRA 5962 …" and
+  "COMPRA 9800 …") shared a normalized counterparty string and were collapsed — the
+  second was silently deduped into the first. `MatchUpdateOrInsert` now compares the
+  raw (pre-normalization) counterparty when exactly one normalized-match candidate exists;
+  if the raws differ the incoming row is forced to a new occurrence insert instead.
+
 - **Own-account transfers mis-pushed as external payees (GH #14).** Transactions whose
   destination IBAN belongs to one of the operator's own `bank_accounts` are now
   classified before reaching YNAB. Both same-currency and cross-currency (FX) own-account

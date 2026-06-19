@@ -26,6 +26,25 @@ use InvalidArgumentException;
  *      with occurrence = max + 1.
  *   3. No match → insert with occurrence = 1.
  *
+ * GH #16 — same-day/same-amount dedup fix (secondary bug):
+ *   The fundamentals-match step (step 2) originally folded the NORMALIZED
+ *   counterparty, so two distinct-card top-ups ("COMPRA 5962 Revolut ..." vs
+ *   "COMPRA 9800 Revolut ...", same day/amount, no entry_reference) collapsed
+ *   — the second was silently Deduped. Fix: when candidates match on (date,
+ *   amount, currency, cdi) AND have normalized counterparty equal to the
+ *   incoming, also compare the RAW (pre-normalization) counterparty. When
+ *   there is exactly one normalized-counterparty match but the stored raw
+ *   counterparty differs from the incoming raw counterparty, treat it as a
+ *   distinct transaction and force an insert (new occurrence) instead of
+ *   deduping. Identical rows (same raw counterparty) still dedup as before.
+ *
+ * GH #16 — CrossSourceTransferLinker invocation (after insert/update):
+ *   After a row is inserted or updated, CrossSourceTransferLinker::link() is
+ *   called. It pattern-matches the transaction against the operator's topup
+ *   link config and — when a match is found — looks for the counterpart leg and
+ *   collapses the pair (funding leg promoted to transfer, destination leg
+ *   marked transfer_dropped). No-op when no config applies.
+ *
  * Immutable-after-insert fields (SPEC §6.4): status, amount_milliunits,
  * currency, credit_debit_indicator, booking_date, dedup_hash, occurrence.
  * Fields that ARE updated from later syncs: counterparty_name/level,
@@ -43,6 +62,7 @@ class MatchUpdateOrInsert
     public function __construct(
         private readonly Resolver $resolver,
         private readonly OwnAccountClassifier $classifier,
+        private readonly ?CrossSourceTransferLinker $transferLinker = null,
     ) {}
 
     /**
@@ -96,12 +116,37 @@ class MatchUpdateOrInsert
             );
 
             if ($untaggedMatches->count() === 1) {
-                $match = $untaggedMatches->first();
+                // GH #16 same-day/same-amount dedup fix: when exactly one normalized-
+                // counterparty candidate exists but its RAW counterparty differs from the
+                // incoming raw counterparty, the normalization collapsed two genuinely
+                // distinct transactions (e.g. "COMPRA 5962 Revolut …" and "COMPRA 9800
+                // Revolut …" both normalize to the same string). In that case we force an
+                // insert so both occurrences survive, rather than silently deduping the
+                // second one into the first. Identical rows (same raw counterparty) still
+                // dedupe — this branch only fires when the raws diverge.
+                /** @var Transaction $candidate */
+                $candidate = $untaggedMatches->first();
+                $storedRaw = $this->extractRawCounterpartyFromStored($candidate);
+
+                if ($storedRaw !== $parsed->rawCounterparty && ! $incomingHasRef) {
+                    // Different raw counterparty under the same normalized form — distinct
+                    // transaction. Insert as a new occurrence so both survive.
+                    $maxOccurrence = (int) $untaggedMatches->max('occurrence');
+                    $result = $this->insert($parsed, occurrence: $maxOccurrence + 1);
+                    $this->maybeLink($account, $result->transaction, $parsed);
+
+                    return $result;
+                }
+
+                $match = $candidate;
             } elseif ($untaggedMatches->count() > 1) {
                 /** @var int $maxOccurrence */
                 $maxOccurrence = (int) $untaggedMatches->max('occurrence');
 
-                return $this->insert($parsed, occurrence: $maxOccurrence + 1);
+                $result = $this->insert($parsed, occurrence: $maxOccurrence + 1);
+                $this->maybeLink($account, $result->transaction, $parsed);
+
+                return $result;
             } elseif (! $incomingHasRef) {
                 // No untagged candidate, but incoming has no ref either. Fall
                 // back to tagged candidates (the absent→present-then-absent
@@ -126,10 +171,40 @@ class MatchUpdateOrInsert
         }
 
         if ($match instanceof Transaction) {
-            return $this->update($match, $parsed);
+            $result = $this->update($match, $parsed);
+            if ($result->outcome !== ApplyOutcome::Deduped) {
+                $this->maybeLink($account, $result->transaction, $parsed);
+            }
+
+            return $result;
         }
 
-        return $this->insert($parsed, occurrence: 1);
+        $result = $this->insert($parsed, occurrence: 1);
+        $this->maybeLink($account, $result->transaction, $parsed);
+
+        return $result;
+    }
+
+    /**
+     * Invoke CrossSourceTransferLinker when one is wired in and the parsed
+     * transaction has relevant raw counterparty / remittance information.
+     *
+     * Called after every insert and after non-Deduped updates. The linker
+     * is a no-op when no matching link config applies, so calling it
+     * unconditionally is safe and cheap (early-return on empty config).
+     */
+    private function maybeLink(BankAccount $account, Transaction $transaction, ParsedIncomingTransaction $parsed): void
+    {
+        if ($this->transferLinker === null) {
+            return;
+        }
+
+        $this->transferLinker->link(
+            account: $account,
+            transaction: $transaction,
+            rawCounterparty: $parsed->rawCounterparty,
+            remittanceInfo: $parsed->remittanceInformation,
+        );
     }
 
     /**

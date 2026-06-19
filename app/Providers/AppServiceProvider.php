@@ -9,6 +9,8 @@ use App\Services\EnableBanking\Client as EnableBankingClient;
 use App\Services\EnableBanking\Jwt as EnableBankingJwt;
 use App\Services\ExchangeRates\FrankfurterClient;
 use App\Services\ExchangeRates\RateProvider;
+use App\Services\Sync\CrossSourceTransferLinker;
+use App\Services\Sync\TopupLinkLoader;
 use App\Services\Ynab\Client as YnabClient;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
@@ -33,6 +35,21 @@ class AppServiceProvider extends ServiceProvider
                 $app->make(RuleLoader::class),
                 $app->make(RuleEngine::class),
                 (string) config('spendula.resolver.atm_cash_label', 'ATM Cash'),
+            ),
+        );
+
+        // GH #16 — cross-source top-up dedup. The loader reads the operator's
+        // own-account-topups.json from the same enabled/ directory as the per-bank
+        // counterparty rules; resolves destination_account_ref → bank_account_id.
+        $this->app->singleton(
+            TopupLinkLoader::class,
+            fn () => new TopupLinkLoader(base_path('config/counterparty-rules-enabled')),
+        );
+
+        $this->app->singleton(
+            CrossSourceTransferLinker::class,
+            fn (Application $app) => new CrossSourceTransferLinker(
+                $app->make(TopupLinkLoader::class),
             ),
         );
 

@@ -271,3 +271,32 @@ change with no material benefit at this scale.
 - **Harder:** already-pushed FX own-account rows that landed as "Currency Exchange" must
   be corrected in YNAB manually. `spendula:counterparty:recompute` updates the local row
   but cannot retroactively change the YNAB-side payee after push.
+
+---
+
+## 2026-06-19 — GH #16: cross-source top-up dedup — Option A (JSON config) and suppress-funding-anchor choice
+
+**Decision.** Use a JSON config file (`config/counterparty-rules-enabled/own-account-topups.json`, parallel to the per-bank rule files) to map each card top-up relationship: `(funding_bank_slug, funding_card_last4, funding_marker, destination_account_ref, apple_pay_tokens[], amount_tolerance_days)`. A new `TopupLinkLoader` resolves `destination_account_ref` → `bank_account_id` once per instance (same caching pattern as `OwnAccountClassifier::loadIbanMap`). The mapping drives `CrossSourceTransferLinker` which links the two legs after each insert/update in `MatchUpdateOrInsert`.
+
+**Decision.** Keep the **funding-bank leg** (DBIT on the bank account) as the survivor and suppress the Revolut leg. Rationale: the operator reconciles against the bank statement, not the Revolut app; the funding leg is the natural anchor. Spendula does not push native YNAB transfers (see `PayloadBuilder::buildMemo` — `[TRANSFER]` memo prefix); the operator converts to a native transfer by hand. The destination leg is marked `transfer_dropped` and excluded from push.
+
+**Alternatives considered.**
+
+1. *Option B: DB table for the mapping.* More flexible (UI, auditability, multi-card growth). Rejected for v1: adds schema + UI complexity for a mapping that changes rarely and is currently one entry. DECISIONS.md documents the upgrade path: when the config file exceeds ~5 entries or a multi-user UI is needed, migrate `own_account_topups` to a DB table with the same columns.
+
+2. *Extend OwnAccountClassifier (IBAN-based).* Top-up legs carry no IBAN on either side, so the IBAN path cannot detect them. Option A is a new detection path that runs beside #14, not on its IBAN ladder.
+
+3. *Keep the destination (Revolut) leg as the survivor.* Rejected: Revolut balances are often manually reconciled inside the Revolut app; the bank statement is the operator's primary source of truth for fund movements.
+
+**Constraints.**
+
+- Neither leg of a card top-up carries a structured IBAN field in the EB payload.
+- The match must be order-independent (either side may sync first) and idempotent (re-syncing must not re-link or change statuses).
+- If the Revolut leg was already pushed to YNAB before the bank leg arrived, retro-editing YNAB is out of scope. Instead: promote the funding leg, leave the destination as-is, log `cross_source.late_pair` for manual convergence.
+
+**Consequences.**
+
+- **Easier:** adding a new card/account pair requires only a config file edit (no code).
+- **Easier:** the fix is self-contained in `CrossSourceTransferLinker` and activated by wiring it into `MatchUpdateOrInsert`'s optional constructor parameter; existing callers that don't inject it are unaffected.
+- **Harder (upgrade path):** when `own-account-topups.json` grows beyond ~5 entries, a DB migration + UI is needed. See above.
+- **New terminal status `transfer_dropped`.** Added to `TransactionStatus` enum and the `transactions_status_check` CHECK constraint (migration `2026_06_19_100001`). `PushRunner` already excludes it via the `whereIn('status', [Approved, Transfer])` query — no change needed there.
