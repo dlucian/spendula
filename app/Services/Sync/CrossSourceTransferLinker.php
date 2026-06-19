@@ -288,7 +288,7 @@ final class CrossSourceTransferLinker
         $date = $destination->booking_date;
 
         // Find all DBIT accounts for this bank slug.
-        $fundingAccountIds = \App\Models\BankAccount::query()
+        $fundingAccountIds = BankAccount::query()
             ->where('bank_slug', $link->fundingBankSlug)
             ->where('active', true)
             ->pluck('id')
@@ -341,8 +341,8 @@ final class CrossSourceTransferLinker
         $prefix = (string) config('spendula.own_account.transfer_prefix', 'Transfer');
 
         // Look up the destination account's display_name for the memo.
-        $destAccount = \App\Models\BankAccount::query()->find($link->resolvedDestinationId);
-        $destLabel = $destAccount instanceof \App\Models\BankAccount && is_string($destAccount->display_name)
+        $destAccount = BankAccount::query()->find($link->resolvedDestinationId);
+        $destLabel = $destAccount instanceof BankAccount && is_string($destAccount->display_name)
             ? $destAccount->display_name
             : $link->destinationAccountRef;
 
