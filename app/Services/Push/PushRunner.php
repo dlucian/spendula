@@ -361,7 +361,7 @@ class PushRunner
             return [];
         }
 
-        /** @var list<string> $matches[1] */
+        /** @var array{0: list<string>, 1: list<string>} $matches */
         $indices = array_map('intval', $matches[1]);
 
         return array_values(array_unique($indices));

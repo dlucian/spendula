@@ -94,7 +94,7 @@ class PayloadBuilder
 
         // Other prefixes are reserved by YNAB itself — fall back to a safe generic.
         foreach (array_slice(self::RESERVED_PAYEE_PREFIXES, 1) as $reserved) {
-            if (is_string($reserved) && str_starts_with($name, $reserved)) {
+            if (str_starts_with($name, $reserved)) {
                 return self::SANITIZED_FALLBACK;
             }
         }
