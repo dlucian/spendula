@@ -260,7 +260,7 @@ class PushRunner
      *
      * @param  array<string, mixed>  $response  YNAB bulk-create response (auto-unwrapped by Client).
      * @param  array<string, Transaction>  $candidateByImportId  Only these transactions are checked.
-     *   Offenders already logged must be excluded from this map before calling.
+     *                                                           Offenders already logged must be excluded from this map before calling.
      * @param  array{pushed:int,duplicate:int,errors:int}  $counters
      */
     private function processGroupResponse(

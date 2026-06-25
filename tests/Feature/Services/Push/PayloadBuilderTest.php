@@ -17,7 +17,7 @@ class PayloadBuilderTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->builder = new PayloadBuilder();
+        $this->builder = new PayloadBuilder;
         $this->account = BankAccount::make(['ynab_account_id' => 'test-ynab-account-id']);
     }
 
