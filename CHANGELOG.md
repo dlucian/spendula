@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **Transfer payee rejected by YNAB + batch poisoning fix (GH #18).** `PayloadBuilder` now
+  sanitizes `payee_name` before it reaches YNAB. Own-account transfer rows whose
+  `counterparty_name` starts with `Transfer : ` have that prefix stripped (the destination
+  name becomes the YNAB payee; the `[TRANSFER]` memo tag preserves the transfer semantics).
+  The other three YNAB-reserved payee strings (`Starting Balance`, `Manual Balance Adjustment`,
+  `Reconciliation Balance Adjustment`) fall back to a safe generic (`Own account transfer`).
+  Separately, `PushRunner` now handles the case where YNAB returns a `400` error that names
+  specific offending zero-based indices (`(index: N)` in the error detail): it strips only
+  those rows and re-POSTs the remaining transactions in a single retry. Previously one bad
+  row poisoned every row in the same batch; now only the genuinely-rejected row is logged as
+  a `PushRunError` and the rest are pushed normally. When YNAB's error contains no parseable
+  indices, or the retry also fails, the original fail-all behaviour is preserved.
+
 - **Cross-source own-account top-up dedup (GH #16).** Card top-ups via Apple Pay
   generate two parallel entries: a DBIT on the funding bank ("COMPRA 5962 Revolut 2180
   Dublin IE") and a CRDT on Revolut ("Apple Pay Top-Up by *2798"). Without deduplication

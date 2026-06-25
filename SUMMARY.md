@@ -1,5 +1,92 @@
 # Latest task summary
 
+## Transfer payee sanitization + batch resilience (GH #18)
+
+### What changed
+
+- **`app/Services/Push/PayloadBuilder.php`** — three additions:
+  1. `RESERVED_PAYEE_PREFIXES` constant: lists the four YNAB-reserved payee strings.
+  2. `SANITIZED_FALLBACK` constant: the generic safe payee used when stripping yields nothing.
+  3. `sanitizePayeeName(?string $name): ?string` private method: strips `Transfer : ` and
+     returns the suffix (or falls back to generic); maps the other three reserved strings
+     to the generic; null passes through unchanged. Applied to `counterparty_name` in
+     `build()` before the existing `PAYEE_MAX` truncation.
+
+- **`app/Services/Push/PushRunner.php`** — two structural changes + one new feature:
+  1. **Extract `processGroupResponse()`**: the inline YNAB-response-processing block
+     (transition Pushed/handle duplicates/log silently-dropped) moved to a private method
+     so both the normal path and the retry path can call it.
+  2. **Extract `parseOffendingIndices()`**: parses `(index: N)` patterns from
+     `$e->body['error']['detail']`; returns `list<int>` (empty if none found).
+  3. **Batch retry-minus-offenders in `YnabException` catch**: on a 400 with parseable
+     indices, offending rows are logged as `PushRunError` (Validation type), survivors
+     are re-POSTed once via `createTransactions($survivorPayloads)`, and the retry
+     response is processed via `processGroupResponse`. If indices are not parseable, or
+     the retry also fails, fall back to the original fail-all path.
+
+- **`tests/Feature/Services/Push/PayloadBuilderTest.php`** (new) — 8 tests covering:
+  `Transfer : X` → `X`; empty suffix → generic; `Starting Balance`, `Manual Balance
+  Adjustment`, `Reconciliation Balance Adjustment` → generic; normal payee unchanged;
+  null stays null; truncation applies after sanitizing; `[TRANSFER]` memo tag preserved.
+
+- **`tests/Feature/Services/Push/PushRunnerTest.php`** — new test
+  `test_batch_resilience_offender_logged_survivors_pushed`: seeds 3 transactions, mocks
+  YNAB to return 400 with `(index: 1)` then 201 for the retry; asserts the offender
+  stays Approved with 1 error count and a PushRunError, the survivors are Pushed with
+  the correct YNAB IDs, and `transactions_pushed=2 / error_count=1` on the PushRun.
+
+- **`CHANGELOG.md`**, **`DECISIONS.md`**, **`SUMMARY.md`** — updated per convention.
+
+### Assumptions made
+
+- YNAB's error detail format for per-row validation failures is `... (index: N) ...` (zero-based).
+  This pattern is based on documented YNAB API behaviour and the actual error that surfaced in the
+  GH #18 incident (`Payee name is reserved`). If YNAB changes the format, `parseOffendingIndices`
+  returns `[]` and the code falls back gracefully to fail-all.
+- `counterparty_name` in the DB is not changed. The sanitizer operates only at payload-build time,
+  preserving the DB value for `spendula:review`/`spendula:status` display.
+- The `Transfer : ` prefix is the format produced by `OwnAccountClassifier` (config key
+  `SPENDULA_OWN_ACCOUNT_TRANSFER_PREFIX`, default `"Transfer"`). If the operator changes that
+  prefix, the sanitizer's hardcoded `'Transfer : '` check will no longer match and those rows
+  will be passed through unsanitized. The plan explicitly scopes the fix to the default prefix;
+  changing the prefix is an operator-controlled edge case not addressed here.
+- Transaction ordering within a bank-account batch is deterministic (booking_date ASC, id ASC),
+  so the zero-based indices YNAB reports in `(index: N)` correspond to that same order.
+- Postgres session timezone is UTC (config baseline).
+- Tests run against real Postgres `spendula_test`.
+
+### Blast radius
+
+- **`PayloadBuilder::build()`**: `counterparty_name` now goes through sanitization before
+  truncation. Any payee starting with `Transfer : ` will have the prefix stripped. This is
+  the intended fix; no other callers are affected (PayloadBuilder is only called from
+  `PushRunner::pushGroup`).
+- **`PushRunner::pushGroup()`**: the happy-path success handling is now via
+  `processGroupResponse()` (no behaviour change). The `YnabException` catch path now
+  branches on 400 + parseable indices before falling back to fail-all (behaviour change:
+  survivors of a 400 with indices are now pushed instead of failed).
+- **Existing tests**: the extracted `processGroupResponse` is covered by the existing
+  PushRunner tests (their assertions remain identical). The new `PayloadBuilderTest` tests
+  are net-new coverage. `test_validation_error_leaves_transactions_approved_and_logs`
+  continues to cover the no-parseable-index fallback path.
+- **No migrations, no new artisan commands, no new routes.**
+
+### Open threads
+
+- Modelling own-account transfers as native YNAB transfer pairs (`transfer_account_id`)
+  is explicitly out of scope (SPEC §8 v1 model). The `[TRANSFER]` memo + sanitized payee
+  is the v1 bridge; operator converts to a native pair manually in YNAB.
+- If the operator changes `SPENDULA_OWN_ACCOUNT_TRANSFER_PREFIX` to something other than
+  `Transfer`, the sanitizer won't strip the prefix. A follow-up could read the config key
+  dynamically, but that would make `PayloadBuilder` config-aware (violating the "pure
+  function" contract) or require constructor injection.
+- The 12 already-failed rows in the operator's prod YNAB must be cleared manually after
+  deploying this fix and re-running `spendula:push`. The fix prevents future failures but
+  does not retroactively push the existing rows (they remain at `status=approved` until
+  the next `spendula:push` run post-deploy).
+
+---
+
 ## Cross-source own-account top-up dedup + same-day import-dedup fix (GH #16)
 
 ### What changed

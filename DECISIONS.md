@@ -4,6 +4,45 @@ Architectural choices, alternatives considered, and the constraints that drove t
 
 ---
 
+## 2026-06-25 — GH #18: sanitize reserved YNAB payee prefix at payload-build + batch retry-minus-offenders
+
+### Sanitize at `PayloadBuilder`, not at classification
+
+**Decision.** The sanitization of reserved YNAB payee prefixes lives in `PayloadBuilder::sanitizePayeeName()`, not in `OwnAccountClassifier` or `MatchUpdateOrInsert`. The `counterparty_name` stored in the DB is preserved unchanged (`Transfer : <dest>` stays in the DB); only the outgoing YNAB payload is cleaned.
+
+**Why.** `PayloadBuilder` is contractually "pure function — no DB, no HTTP — so the … logic is unit-testable without fixtures" (class docblock). Putting the sanitizer there keeps the concern at the YNAB boundary, not in the sync/classification layer. The DB value is display-meaningful and used by `spendula:review` and `spendula:status`; changing it would break the operator's transfer-identification workflow. The `[TRANSFER]` memo tag already conveys transfer semantics to YNAB.
+
+**Alternatives considered.**
+1. *Rename `counterparty_name` at classification time.* Rejected: would change `Transfer : <dest>` in the DB, breaking `spendula:review` display and the existing test assertions on `OwnAccountClassifier`. The DB value is the operator's ground truth.
+2. *Strip the prefix in a YNAB-client middleware layer.* Rejected: the client has no visibility into per-field payload semantics; making it parse and mutate payee_name would couple the HTTP client to domain rules.
+
+**Consequences.**
+- **Easier:** the sanitizer is a pure private method, unit-tested in isolation via `PayloadBuilder::build()`.
+- **Harder:** a future YNAB-reserved prefix not in `RESERVED_PAYEE_PREFIXES` still requires a code update here. The constant is the canonical list; keep it current.
+
+### Reserved prefix list and handling
+
+**Decision.** Four YNAB-reserved prefixes are defined in `PayloadBuilder::RESERVED_PAYEE_PREFIXES`:
+- `Transfer : ` — strip the prefix; use the suffix (own-account destination label) as the YNAB payee. If the suffix is empty or whitespace, fall back to `Own account transfer`.
+- `Starting Balance`, `Manual Balance Adjustment`, `Reconciliation Balance Adjustment` — these are YNAB-internal reconciliation payees with no operator-meaningful suffix; fall back directly to `Own account transfer`.
+
+**Why two behaviours.** The `Transfer : ` prefix is Spendula-generated and carries a useful destination label after the colon. Stripping it and using the destination makes the YNAB payee informative. The other three are YNAB internal names that Spendula would only produce if the operator (incorrectly) used them as counterparty names in their bank; there is no meaningful suffix to extract.
+
+### Batch retry-minus-offenders in `PushRunner`
+
+**Decision.** When YNAB returns a 400 and the error detail contains `(index: N)` pattern(s), `PushRunner::pushGroup` strips only those transactions from the payload and re-POSTs the remainder once. If no parseable indices are found, or the retry also returns a non-2xx, the original fail-all behaviour is preserved. No more than one retry per group; no exponential back-off.
+
+**Why one retry, no more.** Unlimited retries risk thundering-herd behaviour if YNAB keeps rejecting the same indices; the 10-minute retry gate (RETRY_GATE_MINUTES) already gates subsequent runs. One deterministic retry is enough to salvage the known-good rows immediately.
+
+**Why only 400.** Only 400 (client-side validation error) names offending indices in YNAB's documented error format. Server errors (5xx), rate limits, and auth failures are handled by the existing branches and are not retried here.
+
+**Consequences.**
+- **Easier:** a single bad row (reserved payee, missing required field) no longer blocks its batch-mates. The offender stays at `status=approved` with `push_attempt_count++` and a `PushRunError`; the rest are pushed normally.
+- **Harder:** the retry logic adds a second HTTP call inside `pushGroup`. If YNAB is flaky, both the initial call and the retry may add to push_attempt_count for the offenders (one stamp). Survivors only get a stamp from the retry (or success).
+- **Harder:** the `processGroupResponse` extraction means the success path has one more method call. No behaviour change; extracted for reuse between the initial and retry paths.
+
+---
+
 ## 2026-05-07 — Counterparty cleanup at L0/L1: separate `name_rules` list (GH #33)
 
 **Decision.** The per-bank counterparty rule JSON gains an optional `name_rules: []` array, parallel to the existing `rules: []`. Entries share the same `Rule` schema (regex pattern + replacement + post hooks + fixtures) and the same first-match-wins / empty-result-falls-through semantics. The `Resolver` runs `name_rules` against the resolved L0 candidate and the L1 candidate before returning; on match the rewritten string is returned at the same level (still 0 or 1) — the rewrite is cleanup, not a level transition. `rules` continues to operate only at L2 against `remittance_information[0]`.

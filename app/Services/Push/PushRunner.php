@@ -163,6 +163,71 @@ class PushRunner
             // alone so a corrected token retries this batch immediately.
             throw $e;
         } catch (YnabException $e) {
+            // On a 400, try to salvage the batch by stripping the offending rows
+            // (reported by YNAB as "(index: N)" in the error detail) and re-POSTing
+            // the survivors once. If no parseable indices are found, or the retry
+            // also fails, fall back to the original behaviour (fail the whole group).
+            if ($e->httpStatus === 400) {
+                $offendingIndices = $this->parseOffendingIndices($e);
+
+                if (! empty($offendingIndices)) {
+                    $offenderSet = array_flip($offendingIndices);
+                    /** @var list<array<string, mixed>> $survivorPayloads */
+                    $survivorPayloads = [];
+                    /** @var array<string, Transaction> $survivorByImportId */
+                    $survivorByImportId = [];
+
+                    foreach ($payloads as $idx => $payload) {
+                        $importId = (string) ($payload['import_id'] ?? '');
+                        if (isset($offenderSet[$idx])) {
+                            $tx = $byImportId[$importId] ?? null;
+                            if ($tx !== null) {
+                                $tx->push_attempt_count++;
+                                $tx->last_push_attempt_at = $now;
+                                $tx->last_push_error = $this->redact($e);
+                                $tx->save();
+                                $this->logError($pushRun, $tx, PushErrorType::Validation, $e);
+                                $counters['errors']++;
+                            }
+                        } else {
+                            $survivorPayloads[] = $payload;
+                            if (isset($byImportId[$importId])) {
+                                $survivorByImportId[$importId] = $byImportId[$importId];
+                            }
+                        }
+                    }
+
+                    if (! empty($survivorPayloads)) {
+                        try {
+                            $retryResponse = $this->client->createTransactions($survivorPayloads);
+                            $this->processGroupResponse($retryResponse, $survivorByImportId, $pushRun, $account, $counters, $now);
+                        } catch (YnabRateLimitException $retryE) {
+                            // Stamp survivors for the retry gate before aborting the run.
+                            foreach ($survivorByImportId as $tx) {
+                                $tx->push_attempt_count++;
+                                $tx->last_push_attempt_at = $now;
+                                $tx->last_push_error = $this->redact($retryE);
+                                $tx->save();
+                            }
+                            throw $retryE;
+                        } catch (YnabAuthException $retryE) {
+                            throw $retryE;
+                        } catch (YnabException $retryE) {
+                            foreach ($survivorByImportId as $tx) {
+                                $tx->push_attempt_count++;
+                                $tx->last_push_attempt_at = $now;
+                                $tx->last_push_error = $this->redact($retryE);
+                                $tx->save();
+                                $this->logError($pushRun, $tx, $this->classifyError($retryE), $retryE);
+                                $counters['errors']++;
+                            }
+                        }
+                    }
+
+                    return;
+                }
+            }
+
             // One YNAB call rejecting a batch fails every row in the batch.
             // Count each rejected row so push_runs.error_count reflects how
             // many transactions actually need attention; otherwise a
@@ -179,6 +244,33 @@ class PushRunner
             return;
         }
 
+        $this->processGroupResponse($response, $byImportId, $pushRun, $account, $counters, $now);
+    }
+
+    /**
+     * Resolve a YNAB bulk-create response against the candidate transaction map.
+     *
+     * Success: transactions in the `transactions` list are transitioned to Pushed;
+     *   those in `duplicate_import_ids` are also transitioned to Pushed (server-side
+     *   dedup hit). Rows in $candidateByImportId not reflected in either list are
+     *   logged as errors (YNAB silently dropped them).
+     *
+     * Side effects: writes to `transactions` and `push_run_errors`. Increments
+     *   $counters by reference.
+     *
+     * @param  array<string, mixed>  $response  YNAB bulk-create response (auto-unwrapped by Client).
+     * @param  array<string, Transaction>  $candidateByImportId  Only these transactions are checked.
+     *   Offenders already logged must be excluded from this map before calling.
+     * @param  array{pushed:int,duplicate:int,errors:int}  $counters
+     */
+    private function processGroupResponse(
+        array $response,
+        array $candidateByImportId,
+        PushRun $pushRun,
+        BankAccount $account,
+        array &$counters,
+        Carbon $now,
+    ): void {
         /** @var list<array<string, mixed>> $created */
         $created = is_array($response['transactions'] ?? null) ? $response['transactions'] : [];
         /** @var list<string> $duplicates */
@@ -189,10 +281,10 @@ class PushRunner
         foreach ($created as $createdTx) {
             $importId = isset($createdTx['import_id']) && is_string($createdTx['import_id']) ? $createdTx['import_id'] : null;
             $ynabId = isset($createdTx['id']) && is_string($createdTx['id']) ? $createdTx['id'] : null;
-            if ($importId === null || $ynabId === null || ! isset($byImportId[$importId])) {
+            if ($importId === null || $ynabId === null || ! isset($candidateByImportId[$importId])) {
                 continue;
             }
-            $transaction = $byImportId[$importId];
+            $transaction = $candidateByImportId[$importId];
             $transaction->status = TransactionStatus::Pushed;
             $transaction->ynab_transaction_id = $ynabId;
             $transaction->ynab_import_id = $importId;
@@ -206,10 +298,10 @@ class PushRunner
         }
 
         foreach ($duplicates as $duplicateImportId) {
-            if (! isset($byImportId[$duplicateImportId])) {
+            if (! isset($candidateByImportId[$duplicateImportId])) {
                 continue;
             }
-            $transaction = $byImportId[$duplicateImportId];
+            $transaction = $candidateByImportId[$duplicateImportId];
             $transaction->status = TransactionStatus::Pushed;
             $transaction->ynab_import_id = $duplicateImportId;
             $transaction->pushed_at = $now;
@@ -229,7 +321,7 @@ class PushRunner
         // Transactions not reflected in either list — YNAB returned 201 but
         // silently dropped the row. Treat as a per-row push error so the run
         // surfaces error_count > 0 and operators see it in push_run_errors.
-        foreach ($byImportId as $importId => $transaction) {
+        foreach ($candidateByImportId as $importId => $transaction) {
             if (isset($resolved[$importId])) {
                 continue;
             }
@@ -247,6 +339,32 @@ class PushRunner
                 'http_status' => 201,
             ]);
         }
+    }
+
+    /**
+     * Parse zero-based transaction indices from a YNAB 400 error detail string.
+     * YNAB reports per-row validation failures as "(index: N)" in the detail field.
+     *
+     * @return list<int>
+     */
+    private function parseOffendingIndices(YnabException $e): array
+    {
+        $detail = null;
+        if (is_array($e->body)
+            && isset($e->body['error']['detail'])
+            && is_string($e->body['error']['detail'])
+        ) {
+            $detail = $e->body['error']['detail'];
+        }
+
+        if ($detail === null || ! preg_match_all('/\(index:\s*(\d+)\)/i', $detail, $matches)) {
+            return [];
+        }
+
+        /** @var list<string> $matches[1] */
+        $indices = array_map('intval', $matches[1]);
+
+        return array_values(array_unique($indices));
     }
 
     private function classifyError(YnabException $e): PushErrorType
