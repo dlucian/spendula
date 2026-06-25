@@ -259,6 +259,65 @@ class PushRunnerTest extends TestCase
         $this->assertStringNotContainsString('Errors this run:', $out);
     }
 
+    public function test_batch_resilience_offender_logged_survivors_pushed(): void
+    {
+        $tx0 = $this->seedApproved('ref-0', -1000, 'Grocery Store');
+        $tx1 = $this->seedApproved('ref-1', -2000, 'Bad Payee');
+        $tx2 = $this->seedApproved('ref-2', -3000, 'Coffee Shop');
+
+        $importId0 = $this->expectedImportId($tx0);
+        $importId2 = $this->expectedImportId($tx2);
+
+        // First call: YNAB rejects the batch citing index 1 (tx1 in insertion order).
+        // Second call: retry without the offender succeeds.
+        Http::fake([
+            'https://api.ynab.test/v1/plans/plan-under-test/transactions' => Http::sequence()
+                ->push([
+                    'error' => [
+                        'id' => '400',
+                        'name' => 'bad_request',
+                        'detail' => 'Payee name is reserved (index: 1)',
+                    ],
+                ], 400)
+                ->push([
+                    'data' => [
+                        'transactions' => [
+                            ['id' => 'ynab-0', 'import_id' => $importId0],
+                            ['id' => 'ynab-2', 'import_id' => $importId2],
+                        ],
+                        'duplicate_import_ids' => [],
+                    ],
+                ], 201),
+        ]);
+
+        $exit = Artisan::call('spendula:push');
+        $this->assertSame(1, $exit); // errors > 0 → FAILURE
+
+        Http::assertSentCount(2); // initial 400 + retry 201
+
+        $tx0->refresh();
+        $this->assertSame(TransactionStatus::Pushed, $tx0->status);
+        $this->assertSame('ynab-0', $tx0->ynab_transaction_id);
+
+        $tx1->refresh();
+        $this->assertSame(TransactionStatus::Approved, $tx1->status);
+        $this->assertSame(1, $tx1->push_attempt_count);
+        $this->assertNotNull($tx1->last_push_attempt_at);
+        $this->assertNotNull($tx1->last_push_error);
+
+        $tx2->refresh();
+        $this->assertSame(TransactionStatus::Pushed, $tx2->status);
+        $this->assertSame('ynab-2', $tx2->ynab_transaction_id);
+
+        $pushRun = PushRun::query()->sole();
+        $this->assertSame(2, $pushRun->transactions_pushed);
+        $this->assertSame(1, $pushRun->error_count);
+
+        $error = PushRunError::query()->sole();
+        $this->assertSame($tx1->id, $error->transaction_id);
+        $this->assertSame(400, $error->http_status);
+    }
+
     private function seedApproved(string $entryRef, int $amountMilliunits, string $counterparty, TransactionStatus $status = TransactionStatus::Approved): Transaction
     {
         static $seq = 0;

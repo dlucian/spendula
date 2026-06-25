@@ -20,6 +20,21 @@ class PayloadBuilder
 
     private const int MEMO_MAX = 200;
 
+    /**
+     * YNAB rejects any payee_name that starts with one of these strings (reserved for internal YNAB use).
+     * 'Transfer : ' is stripped and the remainder used; the other three fall back to a safe generic.
+     *
+     * @var list<string>
+     */
+    private const array RESERVED_PAYEE_PREFIXES = [
+        'Transfer : ',
+        'Starting Balance',
+        'Manual Balance Adjustment',
+        'Reconciliation Balance Adjustment',
+    ];
+
+    private const string SANITIZED_FALLBACK = 'Own account transfer';
+
     /** @return array<string, mixed> */
     public function build(Transaction $transaction, BankAccount $account): array
     {
@@ -46,7 +61,7 @@ class PayloadBuilder
             );
         }
 
-        $payeeName = $transaction->counterparty_name;
+        $payeeName = $this->sanitizePayeeName($transaction->counterparty_name);
         if (is_string($payeeName) && mb_strlen($payeeName) > self::PAYEE_MAX) {
             $payeeName = mb_substr($payeeName, 0, self::PAYEE_MAX);
         }
@@ -61,6 +76,30 @@ class PayloadBuilder
             'approved' => false,
             'import_id' => $importId,
         ];
+    }
+
+    private function sanitizePayeeName(?string $name): ?string
+    {
+        if ($name === null) {
+            return null;
+        }
+
+        // Strip our own "Transfer : <dest>" prefix: the row is already tagged [TRANSFER]
+        // in the memo, so the destination name alone is the useful YNAB payee.
+        if (str_starts_with($name, 'Transfer : ')) {
+            $stripped = mb_substr($name, mb_strlen('Transfer : '));
+
+            return trim($stripped) !== '' ? $stripped : self::SANITIZED_FALLBACK;
+        }
+
+        // Other prefixes are reserved by YNAB itself — fall back to a safe generic.
+        foreach (array_slice(self::RESERVED_PAYEE_PREFIXES, 1) as $reserved) {
+            if (str_starts_with($name, $reserved)) {
+                return self::SANITIZED_FALLBACK;
+            }
+        }
+
+        return $name;
     }
 
     private function buildMemo(Transaction $transaction): string
