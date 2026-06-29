@@ -163,13 +163,14 @@
     },
     {
       "name": "deposito-numerario",
-      "description": "BCP cash deposit at a branch/ATM. The trailing space-separated digits are a per-deposit reference number, so each deposit would otherwise resolve to a distinct payee and never aggregate. Collapse to a single stable 'DEPOSITO NUMERARIO' payee so an auto-decision rule can re-match every future cash deposit.",
-      "pattern": "/^DEPOSITO\\s+NUMERARIO\\b.*$/i",
+      "description": "BCP cash deposit at a branch/ATM. The trailing space-separated digits are a per-deposit reference number, so each deposit would otherwise resolve to a distinct payee and never aggregate. Strip the numeric reference tail only, collapsing to a stable 'DEPOSITO NUMERARIO' payee so an auto-decision rule can re-match every future cash deposit. Variants carrying non-numeric detail are left intact rather than over-collapsed.",
+      "pattern": "/^DEPOSITO\\s+NUMERARIO(?:\\s+\\d[\\d\\s]*)?$/i",
       "replacement": "DEPOSITO NUMERARIO",
       "tests": [
         {"in": "DEPOSITO NUMERARIO   3729596 25110174409", "out": "DEPOSITO NUMERARIO"},
         {"in": "DEPOSITO NUMERARIO 9999999 88001122334", "out": "DEPOSITO NUMERARIO"},
-        {"in": "DEPOSITO NUMERARIO", "out": "DEPOSITO NUMERARIO"}
+        {"in": "DEPOSITO NUMERARIO", "out": "DEPOSITO NUMERARIO"},
+        {"in": "DEPOSITO NUMERARIO ESTRANGEIRO 12", "out": "DEPOSITO NUMERARIO ESTRANGEIRO 12"}
       ]
     }
   ]
