@@ -66,9 +66,30 @@ class ReviewCommand extends Command
                     // operator-authored skip/transfer rules (and the own-account
                     // classifier) still win: those rows have already left the
                     // fetched pool and are not swept into `approved`.
+                    //
+                    // This is the unattended (cron) path: once every remaining
+                    // fetched row is approved there is nothing left to review,
+                    // so we short-circuit BEFORE ReviewSession. Running it would
+                    // print "Nothing to review — the fetched queue is empty."
+                    // and then a "Reviewed 0: approved=0 …" summary that
+                    // contradicts the rows we just approved. The single line
+                    // here (plus the rules breakdown when non-empty) is the
+                    // whole report.
                     if ($approveAll) {
                         $approved = $actions->bulkApproveAll();
                         $this->info("Approved {$approved} fetched transaction(s).");
+
+                        $ruleCounts = $this->recomputeAutoApplyByAction($autoApplied['appliedIds']);
+                        if (array_sum($ruleCounts) > 0) {
+                            $this->line(sprintf(
+                                '  Payee rules also applied: approved=%d skipped=%d transferred=%d',
+                                $ruleCounts['approved'],
+                                $ruleCounts['skipped'],
+                                $ruleCounts['transferred'],
+                            ));
+                        }
+
+                        return self::SUCCESS;
                     }
 
                     $session = new ReviewSession($this, $actions, recorder: $ruleRecorder);
@@ -125,14 +146,17 @@ class ReviewCommand extends Command
         if ($autoAppliedIds === []) {
             return $byAction;
         }
-        // pluck() returns the raw DB string, not the cast enum, so
-        // compare against the backing values to avoid silently
-        // bucketing nothing (round-5 codex P2).
+        // pluck('status') applies the model's enum cast, so it yields
+        // TransactionStatus instances (Laravel 13). Older code here assumed
+        // raw strings and matched on ->value, which silently bucketed
+        // nothing once the cast kicked in. Normalise to the backing value so
+        // both a cast enum and a raw string are counted (GH #22).
         $statuses = Transaction::query()
             ->whereIn('id', $autoAppliedIds)
             ->pluck('status');
         foreach ($statuses as $status) {
-            match ($status) {
+            $value = $status instanceof TransactionStatus ? $status->value : $status;
+            match ($value) {
                 TransactionStatus::Approved->value => $byAction['approved']++,
                 TransactionStatus::Skipped->value => $byAction['skipped']++,
                 TransactionStatus::Transfer->value => $byAction['transferred']++,

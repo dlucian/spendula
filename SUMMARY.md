@@ -16,7 +16,19 @@
   2. `$approveAll` added to the auto-mutation gate, so `PayeeRuleEngine::applyRules`
      runs first (rules/own-account classifier win precedence).
   3. New `if ($approveAll)` block calls `bulkApproveAll()` after the rules pass and
-     after the trivial block, reporting `Approved N fetched transaction(s).`
+     after the trivial block, reporting `Approved N fetched transaction(s).` It then
+     **short-circuits and returns SUCCESS before `ReviewSession`** — the fetched pool
+     is empty, so running the session would emit a "Nothing to review" notice plus a
+     contradictory "Reviewed 0: approved=0 …" summary after the rows were approved
+     (Copilot PR review). When rules also acted, a `Payee rules also applied:
+     approved=X skipped=Y transferred=Z` detail line is printed so nothing is hidden.
+  4. **Latent bug fix in `recomputeAutoApplyByAction()`**: `pluck('status')` returns
+     cast `TransactionStatus` enum instances under Laravel 13, but the `match` compared
+     against `->value` strings and silently bucketed everything as `default` — so the
+     existing interactive/`--bulk-approve-trivial` `Reviewed N:` summary had been
+     reporting `approved=0 skipped=0 transferred=0` for auto-applied rule rows. Now
+     normalises enum→value before matching. Surfaced because this PR is the first to
+     assert on those counts.
 
 - **Tests**:
   - `TransactionActionsTest` — `bulkApproveAll` touches every fetched row (levels

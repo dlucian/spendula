@@ -96,6 +96,10 @@ class ReviewCommandTest extends TestCase
 
         $this->artisan('spendula:review', ['--approve-all' => true])
             ->expectsOutputToContain('Approved 3 fetched transaction(s).')
+            // Short-circuits before ReviewSession: no empty-queue notice, no
+            // contradictory "Reviewed 0" summary after mutating rows.
+            ->doesntExpectOutputToContain('Nothing to review')
+            ->doesntExpectOutputToContain('Reviewed 0')
             ->assertSuccessful();
 
         $this->assertSame(3, Transaction::query()->where('status', TransactionStatus::Approved->value)->count());
@@ -121,6 +125,7 @@ class ReviewCommandTest extends TestCase
 
         $this->artisan('spendula:review', ['--approve-all' => true])
             ->expectsOutputToContain('Approved 1 fetched transaction(s).')
+            ->expectsOutputToContain('Payee rules also applied: approved=0 skipped=1 transferred=0')
             ->assertSuccessful();
 
         $this->assertSame(TransactionStatus::Skipped, $ruleTarget->refresh()->status);
