@@ -86,4 +86,37 @@ class TransactionActions
                 'updated_at' => Carbon::now(),
             ]);
     }
+
+    /**
+     * spendula:review --approve-all (GH #22): approve every remaining `fetched`
+     * row, regardless of resolution level or currency. Returns the count of rows
+     * transitioned.
+     *
+     * Success: only rows still at status=fetched are affected; they become
+     *   status=approved with skip metadata cleared, and are then eligible for
+     *   spendula:push (which pushes approved + transfer). Rows already in any
+     *   other status — approved, skipped, transfer, transfer_dropped, pushed,
+     *   tracking — are untouched. Callers that also apply PayeeRuleEngine should
+     *   do so BEFORE calling this, so operator-authored skip/transfer rules
+     *   remove their rows from the fetched pool first and win precedence.
+     *
+     * Side effects: single bulk UPDATE on `transactions`. No HTTP, no events.
+     *
+     * Idempotency: safe to re-run — a second call finds no fetched rows and
+     *   returns 0.
+     *
+     * Concurrency: intended to run under AdvisoryLock::REVIEW (held by the
+     *   review command), mirroring bulkApproveTrivial.
+     */
+    public function bulkApproveAll(): int
+    {
+        return Transaction::query()
+            ->where('status', TransactionStatus::Fetched->value)
+            ->update([
+                'status' => TransactionStatus::Approved->value,
+                'skipped_at' => null,
+                'skip_reason' => null,
+                'updated_at' => Carbon::now(),
+            ]);
+    }
 }
