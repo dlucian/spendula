@@ -14,7 +14,7 @@ use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 
-#[Signature('spendula:review {--bulk-approve-trivial : Auto-approve rows whose resolution level ≤ 1 and currency matches SPENDULA_BASE_CURRENCY}')]
+#[Signature('spendula:review {--bulk-approve-trivial : Auto-approve rows whose resolution level ≤ 1 and currency matches SPENDULA_BASE_CURRENCY} {--approve-all : Auto-approve every fetched row (for unattended cron sync→review→push; YNAB becomes the approval gate)}')]
 #[Description('Interactive CLI queue: Approve / Skip / Transfer fetched transactions.')]
 class ReviewCommand extends Command
 {
@@ -43,8 +43,9 @@ class ReviewCommand extends Command
                     // non-TTY remains a no-op.)
                     $isInteractive = $this->isInteractiveSession();
                     $bulkApproveTrivial = (bool) $this->option('bulk-approve-trivial');
+                    $approveAll = (bool) $this->option('approve-all');
                     $autoApplied = ['appliedIds' => [], 'byAction' => ['approved' => 0, 'skipped' => 0, 'transferred' => 0]];
-                    if ($isInteractive || $bulkApproveTrivial) {
+                    if ($isInteractive || $bulkApproveTrivial || $approveAll) {
                         $queue = Transaction::query()
                             ->where('status', TransactionStatus::Fetched->value)
                             ->with('bankAccount')
@@ -59,6 +60,15 @@ class ReviewCommand extends Command
                         $baseCurrency = (string) config('spendula.base_currency', 'EUR');
                         $approved = $actions->bulkApproveTrivial($baseCurrency);
                         $this->info("Bulk-approved {$approved} trivial transaction(s) in {$baseCurrency}.");
+                    }
+
+                    // GH #22 — --approve-all runs AFTER auto-applied rules so
+                    // operator-authored skip/transfer rules (and the own-account
+                    // classifier) still win: those rows have already left the
+                    // fetched pool and are not swept into `approved`.
+                    if ($approveAll) {
+                        $approved = $actions->bulkApproveAll();
+                        $this->info("Approved {$approved} fetched transaction(s).");
                     }
 
                     $session = new ReviewSession($this, $actions, recorder: $ruleRecorder);

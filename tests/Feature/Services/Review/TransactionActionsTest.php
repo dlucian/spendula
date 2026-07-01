@@ -175,6 +175,34 @@ class TransactionActionsTest extends TestCase
         $this->assertSame(TransactionStatus::Approved, $notFetched->refresh()->status);
     }
 
+    public function test_bulk_approve_all_touches_every_fetched_row_regardless_of_level_or_currency(): void
+    {
+        $trivial = $this->fetchedTransaction(level: 0, currency: 'EUR');
+        $highLevel = $this->fetchedTransaction(level: 2, currency: 'EUR', entryRef: 'ref-lvl2');
+        $foreignCurrency = $this->fetchedTransaction(level: 0, currency: 'RON', entryRef: 'ref-ron');
+
+        // Non-fetched rows must be left alone.
+        $approved = $this->fetchedTransaction(level: 0, currency: 'EUR', entryRef: 'ref-approved');
+        $approved->status = TransactionStatus::Approved;
+        $approved->save();
+        $skipped = $this->fetchedTransaction(level: 0, currency: 'EUR', entryRef: 'ref-skipped');
+        $skipped->status = TransactionStatus::Skipped;
+        $skipped->save();
+        $transfer = $this->fetchedTransaction(level: 0, currency: 'EUR', entryRef: 'ref-transfer');
+        $transfer->status = TransactionStatus::Transfer;
+        $transfer->save();
+
+        $count = $this->actions->bulkApproveAll();
+
+        $this->assertSame(3, $count);
+        $this->assertSame(TransactionStatus::Approved, $trivial->refresh()->status);
+        $this->assertSame(TransactionStatus::Approved, $highLevel->refresh()->status);
+        $this->assertSame(TransactionStatus::Approved, $foreignCurrency->refresh()->status);
+        $this->assertSame(TransactionStatus::Approved, $approved->refresh()->status);
+        $this->assertSame(TransactionStatus::Skipped, $skipped->refresh()->status);
+        $this->assertSame(TransactionStatus::Transfer, $transfer->refresh()->status);
+    }
+
     private function fetchedTransaction(int $level = 0, string $currency = 'EUR', string $entryRef = 'ref-1'): Transaction
     {
         static $seq = 0;

@@ -83,6 +83,51 @@ class ReviewCommandTest extends TestCase
         $this->assertSame(TransactionStatus::Approved, $heuristicTarget->refresh()->status);
     }
 
+    public function test_approve_all_flag_approves_every_fetched_row_and_reports_count(): void
+    {
+        $this->seedMockBank();
+        $account = $this->seedAccount('EUR');
+        $foreign = $this->seedAccount('RON');
+
+        // Mixed resolution levels and currencies — all fetched, all approved.
+        $this->seedTransaction($account, level: 0, entryRef: 'ref-a');
+        $this->seedTransaction($account, level: 2, entryRef: 'ref-b');
+        $this->seedTransaction($foreign, level: 3, entryRef: 'ref-c');
+
+        $this->artisan('spendula:review', ['--approve-all' => true])
+            ->expectsOutputToContain('Approved 3 fetched transaction(s).')
+            ->assertSuccessful();
+
+        $this->assertSame(3, Transaction::query()->where('status', TransactionStatus::Approved->value)->count());
+        $this->assertSame(0, Transaction::query()->where('status', TransactionStatus::Fetched->value)->count());
+    }
+
+    public function test_approve_all_honors_existing_payee_rules(): void
+    {
+        // Rules run before the bulk approve, so an operator-authored
+        // `skipped` rule wins — its row is never swept into `approved`.
+        $this->seedMockBank();
+        $account = $this->seedAccount('EUR');
+        $ruleTarget = $this->seedTransaction($account, level: 2, entryRef: 'ref-rule-skipped');
+        $plain = $this->seedTransaction($account, level: 2, entryRef: 'ref-no-rule');
+        $plain->counterparty_name = 'No Rule Here';
+        $plain->save();
+        PayeeRule::query()->create([
+            'bank_slug' => 'mock',
+            'counterparty_name' => 'Coffee Shop',
+            'action' => TransactionStatus::Skipped->value,
+            'skip_reason' => 'unwanted',
+        ]);
+
+        $this->artisan('spendula:review', ['--approve-all' => true])
+            ->expectsOutputToContain('Approved 1 fetched transaction(s).')
+            ->assertSuccessful();
+
+        $this->assertSame(TransactionStatus::Skipped, $ruleTarget->refresh()->status);
+        $this->assertSame('unwanted', $ruleTarget->skip_reason);
+        $this->assertSame(TransactionStatus::Approved, $plain->refresh()->status);
+    }
+
     private function seedMockBank(): void
     {
         Bank::query()->create([
